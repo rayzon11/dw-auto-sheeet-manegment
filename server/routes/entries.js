@@ -1,0 +1,226 @@
+'use strict';
+const express = require('express');
+const { db, audit } = require('../lib/db');
+const A = require('../lib/auth');
+const { businessDate, currentBusinessDate } = require('../lib/businessDate');
+
+const router = express.Router();
+router.use(A.requireAuth);
+
+function resolveDate(body) {
+  if (body && body.business_date) return body.business_date;
+  if (body && body.ts) return businessDate(body.ts);
+  return currentBusinessDate();
+}
+
+// ── BANKS ────────────────────────────────────────────────────
+router.get('/banks', (req, res) => {
+  res.json({ ok: true, rows: db.prepare('SELECT * FROM banks ORDER BY id').all() });
+});
+router.post('/banks', (req, res) => {
+  const { name, holder, acno, open_balance } = req.body || {};
+  if (!name) return res.status(400).json({ ok: false, error: 'name required' });
+  const info = db.prepare('INSERT INTO banks(name, holder, acno, open_balance) VALUES (?,?,?,?)')
+    .run(name, holder || '', acno || '', Number(open_balance) || 0);
+  audit(req.user.id, 'create', 'bank', info.lastInsertRowid, { name });
+  res.json({ ok: true, id: info.lastInsertRowid });
+});
+router.patch('/banks/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const { name, holder, acno, open_balance } = req.body || {};
+  const cur = db.prepare('SELECT * FROM banks WHERE id = ?').get(id);
+  if (!cur) return res.status(404).json({ ok: false, error: 'not found' });
+  db.prepare('UPDATE banks SET name=?, holder=?, acno=?, open_balance=? WHERE id=?')
+    .run(name ?? cur.name, holder ?? cur.holder, acno ?? cur.acno,
+         (open_balance === undefined ? cur.open_balance : Number(open_balance) || 0), id);
+  audit(req.user.id, 'update', 'bank', id);
+  res.json({ ok: true });
+});
+router.delete('/banks/:id', (req, res) => {
+  db.prepare('DELETE FROM banks WHERE id = ?').run(Number(req.params.id));
+  audit(req.user.id, 'delete', 'bank', req.params.id);
+  res.json({ ok: true });
+});
+
+// ── PANELS ───────────────────────────────────────────────────
+router.get('/panels', (req, res) => {
+  res.json({ ok: true, rows: db.prepare('SELECT * FROM panels ORDER BY id').all() });
+});
+router.post('/panels', (req, res) => {
+  const { name, slug, url, open_chips, close_chips } = req.body || {};
+  if (!name || !slug) return res.status(400).json({ ok: false, error: 'name and slug required' });
+  try {
+    const info = db.prepare('INSERT INTO panels(name, slug, url, open_chips, close_chips) VALUES (?,?,?,?,?)')
+      .run(name, slug, url || '', Number(open_chips) || 0, Number(close_chips) || 0);
+    audit(req.user.id, 'create', 'panel', info.lastInsertRowid);
+    res.json({ ok: true, id: info.lastInsertRowid });
+  } catch (e) { res.status(400).json({ ok: false, error: String(e.message) }); }
+});
+router.patch('/panels/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const cur = db.prepare('SELECT * FROM panels WHERE id = ?').get(id);
+  if (!cur) return res.status(404).json({ ok: false, error: 'not found' });
+  const { name, url, open_chips, close_chips } = req.body || {};
+  db.prepare('UPDATE panels SET name=?, url=?, open_chips=?, close_chips=? WHERE id=?')
+    .run(name ?? cur.name, url ?? cur.url,
+         (open_chips === undefined ? cur.open_chips : Number(open_chips) || 0),
+         (close_chips === undefined ? cur.close_chips : Number(close_chips) || 0), id);
+  audit(req.user.id, 'update', 'panel', id);
+  res.json({ ok: true });
+});
+router.delete('/panels/:id', (req, res) => {
+  db.prepare('DELETE FROM panels WHERE id = ?').run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+// ── BANK TXNS ────────────────────────────────────────────────
+router.get('/bank-txns', (req, res) => {
+  const date = req.query.business_date || currentBusinessDate();
+  const rows = db.prepare('SELECT * FROM bank_txns WHERE business_date = ? ORDER BY id').all(date);
+  res.json({ ok: true, business_date: date, rows });
+});
+router.post('/bank-txns', (req, res) => {
+  const b = req.body || {};
+  if (!b.type || !b.amt) return res.status(400).json({ ok: false, error: 'type and amt required' });
+  const bd = resolveDate(b);
+  const info = db.prepare(`
+    INSERT INTO bank_txns(business_date, ts, bank_id, type, amt, detail, category, source, ext_ref, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).run(bd, b.ts || null, b.bank_id || null, b.type, Number(b.amt) || 0,
+         b.detail || '', b.category || null, b.source || 'manual', b.ext_ref || null, req.user.id);
+  audit(req.user.id, 'create', 'bank_txn', info.lastInsertRowid);
+  res.json({ ok: true, id: info.lastInsertRowid });
+});
+router.delete('/bank-txns/:id', (req, res) => {
+  db.prepare('DELETE FROM bank_txns WHERE id = ?').run(Number(req.params.id));
+  audit(req.user.id, 'delete', 'bank_txn', req.params.id);
+  res.json({ ok: true });
+});
+
+// ── DW ───────────────────────────────────────────────────────
+router.get('/dw', (req, res) => {
+  const date = req.query.business_date || currentBusinessDate();
+  const rows = db.prepare('SELECT * FROM dw WHERE business_date = ? ORDER BY id').all(date);
+  res.json({ ok: true, business_date: date, rows });
+});
+router.post('/dw', (req, res) => {
+  const b = req.body || {};
+  if (!b.type || !b.amt) return res.status(400).json({ ok: false, error: 'type and amt required' });
+  const bd = resolveDate(b);
+  const info = db.prepare(`
+    INSERT INTO dw(business_date, ts, panel_slug, type, amt, name, chips, utr, remark, source, ext_ref, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(bd, b.ts || null, b.panel_slug || null, b.type, Number(b.amt) || 0,
+         b.name || '', Number(b.chips) || 0, b.utr || '', b.remark || '',
+         b.source || 'manual', b.ext_ref || null, req.user.id);
+  audit(req.user.id, 'create', 'dw', info.lastInsertRowid);
+  res.json({ ok: true, id: info.lastInsertRowid });
+});
+router.delete('/dw/:id', (req, res) => {
+  db.prepare('DELETE FROM dw WHERE id = ?').run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+// ── GPAY ─────────────────────────────────────────────────────
+router.get('/gpay', (req, res) => {
+  const date = req.query.business_date || currentBusinessDate();
+  const rows = db.prepare('SELECT * FROM gpay WHERE business_date = ? ORDER BY id').all(date);
+  res.json({ ok: true, business_date: date, rows });
+});
+router.post('/gpay', (req, res) => {
+  const b = req.body || {};
+  if (!b.type || !b.amt) return res.status(400).json({ ok: false, error: 'type and amt required' });
+  const bd = resolveDate(b);
+  const info = db.prepare(`
+    INSERT INTO gpay(business_date, ts, type, amt, name, utr, panel_slug, bank_id, remark, source, ext_ref, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(bd, b.ts || null, b.type, Number(b.amt) || 0, b.name || '', b.utr || '',
+         b.panel_slug || null, b.bank_id || null, b.remark || '',
+         b.source || 'manual', b.ext_ref || null, req.user.id);
+  audit(req.user.id, 'create', 'gpay', info.lastInsertRowid);
+  res.json({ ok: true, id: info.lastInsertRowid });
+});
+router.delete('/gpay/:id', (req, res) => {
+  db.prepare('DELETE FROM gpay WHERE id = ?').run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+// ── EXPENSES ─────────────────────────────────────────────────
+router.get('/expenses', (req, res) => {
+  const date = req.query.business_date || currentBusinessDate();
+  const rows = db.prepare('SELECT * FROM expenses WHERE business_date = ? ORDER BY id').all(date);
+  res.json({ ok: true, rows });
+});
+router.post('/expenses', (req, res) => {
+  const b = req.body || {};
+  const bd = resolveDate(b);
+  const info = db.prepare(
+    'INSERT INTO expenses(business_date, detail, amt, category, remark, employee, created_by) VALUES (?,?,?,?,?,?,?)'
+  ).run(bd, b.detail || '', Number(b.amt) || 0, b.category || null, b.remark || '', b.employee || '', req.user.id);
+  audit(req.user.id, 'create', 'expense', info.lastInsertRowid, { category: b.category });
+  res.json({ ok: true, id: info.lastInsertRowid });
+});
+router.delete('/expenses/:id', (req, res) => {
+  db.prepare('DELETE FROM expenses WHERE id = ?').run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+// ── FREE CHIPS ───────────────────────────────────────────────
+router.get('/free-chips', (req, res) => {
+  const date = req.query.business_date || currentBusinessDate();
+  const rows = db.prepare('SELECT * FROM free_chips WHERE business_date = ? ORDER BY id').all(date);
+  res.json({ ok: true, rows });
+});
+router.post('/free-chips', (req, res) => {
+  const b = req.body || {};
+  const bd = resolveDate(b);
+  const info = db.prepare('INSERT INTO free_chips(business_date, panel_slug, amt, remark, created_by) VALUES (?,?,?,?,?)')
+    .run(bd, b.panel_slug || null, Number(b.amt) || 0, b.remark || '', req.user.id);
+  res.json({ ok: true, id: info.lastInsertRowid });
+});
+router.delete('/free-chips/:id', (req, res) => {
+  db.prepare('DELETE FROM free_chips WHERE id = ?').run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+// ── HISAB SUMMARY ────────────────────────────────────────────
+router.get('/hisab', (req, res) => {
+  const date = req.query.business_date || currentBusinessDate();
+  const q = (sql) => db.prepare(sql).all(date);
+
+  const banks = db.prepare('SELECT * FROM banks').all();
+  const panels = db.prepare('SELECT * FROM panels').all();
+  const bankTxns = q('SELECT * FROM bank_txns WHERE business_date = ?');
+  const dw = q('SELECT * FROM dw WHERE business_date = ?');
+  const gpay = q('SELECT * FROM gpay WHERE business_date = ?');
+  const expenses = q('SELECT * FROM expenses WHERE business_date = ?');
+  const free_chips = q('SELECT * FROM free_chips WHERE business_date = ?');
+
+  const sum = (arr, f = e => e.amt) => arr.reduce((s, e) => s + (Number(f(e)) || 0), 0);
+  const bankCredit = sum(bankTxns.filter(t => t.type === 'credit'));
+  const bankDebit = sum(bankTxns.filter(t => t.type === 'debit'));
+  const panelDeposit = sum(dw.filter(t => /deposit/i.test(t.type)));
+  const panelWithdraw = sum(dw.filter(t => /withdraw/i.test(t.type)));
+  const gpayRecv = sum(gpay.filter(t => /recv|received|credit/i.test(t.type)));
+  const gpaySent = sum(gpay.filter(t => /sent|debit/i.test(t.type)));
+  const expTotal = sum(expenses);
+  const fcTotal = sum(free_chips);
+
+  const bankNet = bankCredit - bankDebit;
+  const panelNet = panelDeposit - panelWithdraw;
+  const hisab = bankNet - panelNet - gpayRecv + gpaySent + fcTotal + expTotal;
+
+  res.json({
+    ok: true, business_date: date,
+    banks, panels, bankTxns, dw, gpay, expenses, free_chips,
+    totals: {
+      bankCredit, bankDebit, bankNet,
+      panelDeposit, panelWithdraw, panelNet,
+      gpayRecv, gpaySent,
+      expenses: expTotal, freeChips: fcTotal,
+      hisab,
+    },
+  });
+});
+
+module.exports = router;

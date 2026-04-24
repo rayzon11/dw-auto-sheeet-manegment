@@ -1,0 +1,30 @@
+node_modules/
+data/hisab.db
+data/hisab.db-shm
+data/hisab.db-wal
+data/exports/
+data/templates/
+data/extension.zip
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+dist/
+build/
+
+# Android build artefacts
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+*.iml
+
+# Original zip extract (reference only)
+_original/
+

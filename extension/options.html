@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"/>
+<title>B2C DW Sync — Settings</title>
+<style>
+  body { font-family:sans-serif; background:#060d1a; color:#e6f1ff; max-width:520px; margin:30px auto; padding:0 20px; }
+  h1 { color:#00d4ff; font-size:18px; }
+  label { display:block; margin-top:12px; font-size:13px; color:#7a8aa0; }
+  input[type=text], input[type=password] { width:100%; padding:8px; background:#0a1426; color:#e6f1ff; border:1px solid #1c2a44; border-radius:5px; }
+  button { margin-top:14px; background:#00d4ff; color:#000; border:none; padding:9px 14px; border-radius:5px; font-weight:600; cursor:pointer; }
+  #msg { margin-top:10px; font-size:13px; color:#29d08c; }
+</style></head><body>
+<h1>B2C DW Sync — Settings</h1>
+<label>Server URL (e.g. http://localhost:3000 or https://yourapp.up.railway.app)</label>
+<input id="url" type="text" placeholder="http://localhost:3000"/>
+<label>API Token (generate in the web app → Admin → API tokens)</label>
+<input id="token" type="password" placeholder="paste token"/>
+<label><input id="auto" type="checkbox"/> Auto-sync panels every 10 minutes when their tab is open</label>
+<button id="save">Save</button>
+<button id="test" style="background:transparent; border:1px solid #1c2a44; color:#e6f1ff; margin-left:8px">Test</button>
+<div id="msg"></div>
+<script src="options.js"></script>
+</body></html>

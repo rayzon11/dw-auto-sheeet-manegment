@@ -1,0 +1,211 @@
+'use strict';
+const path = require('path');
+const fs = require('fs');
+const { DatabaseSync } = require('node:sqlite');
+
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'hisab.db');
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+
+const raw = new DatabaseSync(DB_PATH);
+raw.exec('PRAGMA journal_mode = WAL;');
+raw.exec('PRAGMA foreign_keys = ON;');
+
+raw.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'operator',
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS devices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  label TEXT,
+  expires_at TEXT NOT NULL,
+  last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  sid TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,
+  action TEXT NOT NULL,
+  entity TEXT,
+  entity_id TEXT,
+  ts TEXT NOT NULL DEFAULT (datetime('now')),
+  meta TEXT
+);
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT UNIQUE NOT NULL,
+  label TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS banks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  holder TEXT,
+  acno TEXT,
+  open_balance REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS bank_txns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  business_date TEXT NOT NULL,
+  ts TEXT,
+  bank_id INTEGER REFERENCES banks(id) ON DELETE SET NULL,
+  type TEXT NOT NULL,
+  amt REAL NOT NULL,
+  detail TEXT,
+  category TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',
+  ext_ref TEXT UNIQUE,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bank_txns_date ON bank_txns(business_date);
+
+CREATE TABLE IF NOT EXISTS panels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  slug TEXT UNIQUE NOT NULL,
+  url TEXT,
+  open_chips REAL DEFAULT 0,
+  close_chips REAL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS dw (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  business_date TEXT NOT NULL,
+  ts TEXT,
+  panel_slug TEXT,
+  type TEXT NOT NULL,
+  amt REAL NOT NULL,
+  name TEXT,
+  chips REAL DEFAULT 0,
+  utr TEXT,
+  remark TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',
+  ext_ref TEXT UNIQUE,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dw_date ON dw(business_date);
+
+CREATE TABLE IF NOT EXISTS gpay (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  business_date TEXT NOT NULL,
+  ts TEXT,
+  type TEXT NOT NULL,
+  amt REAL NOT NULL,
+  name TEXT,
+  utr TEXT,
+  panel_slug TEXT,
+  bank_id INTEGER REFERENCES banks(id) ON DELETE SET NULL,
+  remark TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',
+  ext_ref TEXT UNIQUE,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_gpay_date ON gpay(business_date);
+
+CREATE TABLE IF NOT EXISTS expenses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  business_date TEXT NOT NULL,
+  detail TEXT,
+  amt REAL NOT NULL,
+  category TEXT,          -- salary | atm | extra_payment | parking_in | parking_out | free_chips | other
+  remark TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_exp_date ON expenses(business_date);
+
+CREATE TABLE IF NOT EXISTS free_chips (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  business_date TEXT NOT NULL,
+  panel_slug TEXT,
+  amt REAL NOT NULL,
+  remark TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_fc_date ON free_chips(business_date);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+`);
+
+// ── Idempotent column migrations (for DBs created before a column existed)
+function ensureColumn(table, col, decl) {
+  const info = raw.prepare(`PRAGMA table_info(${table})`).all();
+  if (!info.find(r => r.name === col)) {
+    raw.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
+  }
+}
+ensureColumn('expenses', 'category', 'TEXT');
+ensureColumn('expenses', 'remark', 'TEXT');
+ensureColumn('expenses', 'employee', 'TEXT'); // for ATM withdrawals: who withdrew the cash
+ensureColumn('bank_txns', 'balance', 'REAL');   // avl bal from SMS — used for gap detection
+ensureColumn('bank_txns', 'mode', 'TEXT');      // UPI|IMPS|NEFT|RTGS|ATM|CARD|null
+
+// ── Adapter to give better-sqlite3–like API on top of node:sqlite ──
+function coerce(v) {
+  if (v === undefined) return null;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  return v;
+}
+function bindArgs(args) {
+  return args.map(coerce);
+}
+
+function prepare(sql) {
+  const stmt = raw.prepare(sql);
+  return {
+    all: (...args) => stmt.all(...bindArgs(args)),
+    get: (...args) => stmt.get(...bindArgs(args)),
+    run: (...args) => {
+      const r = stmt.run(...bindArgs(args));
+      return { changes: Number(r.changes || 0), lastInsertRowid: Number(r.lastInsertRowid || 0) };
+    },
+  };
+}
+
+function exec(sql) { raw.exec(sql); }
+
+function transaction(fn) {
+  return (...args) => {
+    raw.exec('BEGIN');
+    try { const out = fn(...args); raw.exec('COMMIT'); return out; }
+    catch (e) { try { raw.exec('ROLLBACK'); } catch (_) {} throw e; }
+  };
+}
+
+const db = { prepare, exec, transaction, raw };
+
+function audit(userId, action, entity, entityId, meta) {
+  try {
+    db.prepare('INSERT INTO audit(user_id, action, entity, entity_id, meta) VALUES (?,?,?,?,?)')
+      .run(userId || null, action, entity || null, entityId == null ? null : String(entityId), meta ? JSON.stringify(meta) : null);
+  } catch (e) { /* ignore */ }
+}
+
+module.exports = { db, audit, DB_PATH };

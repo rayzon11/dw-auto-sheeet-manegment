@@ -1,0 +1,361 @@
+'use strict';
+/**
+ * B2C DW Sync — content script.
+ *
+ * Scrapes deposit/withdrawal request tables from gaming panels, keeps only
+ * APPROVED rows (skips rejected/pending/cancelled), auto-refreshes on a
+ * configurable interval, dedupes client-side so we don't spam the server, and
+ * shows a floating badge with live status + errors.
+ *
+ * Self-adapting: works against any table with a date/name/amount/status column
+ * layout. If the structure is unknown, the "Diagnose" popup button dumps the
+ * table shape so we can tune it.
+ */
+(function () {
+  const HOST = location.hostname;
+  const POLL_MS = 15_000;                 // auto-refresh every 15s
+  const BADGE_ID = 'b2c-badge';
+  const DEBUG_KEY = 'b2cDebug';
+
+  // ─── Per-site config ──────────────────────────────────────────────────
+  const SITES = {
+    'freeplay24':    { slug: 'freeplay24',    label: 'Freeplay24' },
+    'testawl-admin': { slug: 'testawl-admin', label: 'Testawl Admin' },
+    'testawl-main':  { slug: 'testawl-main',  label: 'Testawl' },
+  };
+  function getSite() {
+    if (HOST.includes('freeplay24'))   return 'freeplay24';
+    if (HOST.includes('admin.testawl'))return 'testawl-admin';
+    if (HOST.includes('testawl247'))   return 'testawl-main';
+    return 'unknown';
+  }
+
+  // ─── Status classification (APPROVED vs others) ───────────────────────
+  // Fintech panels label these differently — cover the common variants.
+  // Anything that isn't clearly approved is SKIPPED (we never enter rejected).
+  // APPROVED only. "done/paid/credited/success/accept/confirm/settled/verified/approv"
+  // must match — we do NOT auto-accept "ok" (too ambiguous).
+  const APPROVED_RE = /\b(approv(?:ed|al)?|success(?:ful)?|complet(?:e|ed)|done|paid|credit(?:ed)?|settled|confirm(?:ed)?|accept(?:ed)?|verified)\b/i;
+  const REJECT_RE   = /\b(reject|fail|cancel|pending|void|hold|declin|retry|review|unpaid|dispute|refund|new|open|process)\b/i;
+
+  function classifyStatus(row) {
+    // 1. Look at a dedicated status cell if headers identified one.
+    const statusText = (row._statusText || '').toString();
+    if (statusText) {
+      if (REJECT_RE.test(statusText)) return 'rejected';
+      if (APPROVED_RE.test(statusText)) return 'approved';
+    }
+    // 2. Fallback: any cell text.
+    const all = (row._rowText || '').toString();
+    if (REJECT_RE.test(all)) return 'rejected';
+    if (APPROVED_RE.test(all)) return 'approved';
+    // 3. Colour heuristic — green usually = approved, red = rejected.
+    const colour = (row._colour || '').toLowerCase();
+    if (/#00[89a-f]|green|success/.test(colour)) return 'approved';
+    if (/#[d-f][0-9a-f]{2}|red|danger/.test(colour)) return 'rejected';
+    return 'unknown';
+  }
+
+  // ─── Helpers ──────────────────────────────────────────────────────────
+  function parseAmt(s) {
+    if (s == null) return 0;
+    const n = parseFloat(String(s).replace(/,/g, '').replace(/[^0-9.\-]/g, ''));
+    return isNaN(n) ? 0 : n;
+  }
+  function cleanDate(s) {
+    if (!s) return new Date().toISOString().slice(0, 10);
+    const m = String(s).match(/(\d{2,4})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+    if (m) {
+      const [, a, b, c] = m;
+      if (a.length === 4) return `${a}-${String(b).padStart(2,'0')}-${String(c).padStart(2,'0')}`;
+      if (c.length === 4) return `${c}-${String(b).padStart(2,'0')}-${String(a).padStart(2,'0')}`;
+    }
+    return String(s).trim().split(' ')[0];
+  }
+  function rowColour(tr) {
+    try {
+      const cs = getComputedStyle(tr);
+      // status chip often has its own colour inside a <span>
+      const chip = tr.querySelector('.badge, .label, .status, .chip, span[class*="success"], span[class*="approved"], span[class*="danger"]');
+      if (chip) {
+        const cs2 = getComputedStyle(chip);
+        return (cs2.backgroundColor || '') + ' ' + (cs2.color || '') + ' ' + chip.className;
+      }
+      return (cs.backgroundColor || '') + ' ' + (cs.color || '') + ' ' + tr.className;
+    } catch (_) { return ''; }
+  }
+
+  // ─── The actual scraper ───────────────────────────────────────────────
+  function classifyTable(headers) {
+    const idx = (re) => headers.findIndex(h => re.test(h));
+    return {
+      date:    idx(/^(date|datetime|created|time|txn.?date|request)/i),
+      name:    idx(/^(name|user|member|client|username|player|account(?!.*no))/i),
+      amount:  idx(/^(amount|amt|total|sum|value)$/i),
+      deposit: idx(/^(deposit|credit|in)$/i),
+      wd:      idx(/^(withdraw|withdrawal|debit|out)$/i),
+      type:    idx(/^(type|txn.?type|kind)$/i),
+      status:  idx(/^(status|state|approval|result)$/i),
+      utr:     idx(/^(utr|ref|txn.?id|transaction|reference)/i),
+      bank:    idx(/^(bank|upi|ifsc|method|channel)/i),
+    };
+  }
+
+  // Collect candidate "tables" — either real <table> elements, or repeating
+  // div-grids that look table-like (common in modern admin dashboards).
+  function collectCandidates() {
+    const tables = [...document.querySelectorAll('table')];
+    // DIV-grid fallback: look for containers with many children that share
+    // the same class and contain an amount-looking child.
+    const gridSelectors = [
+      '[role="table"]', '[role="grid"]',
+      '.table', '.data-table', '.grid-table', '.list-table',
+      '.ant-table', '.mat-table', '.MuiTable-root', '.rt-table',
+      '.dataTables_wrapper', 'tbody',
+    ];
+    for (const sel of gridSelectors) {
+      document.querySelectorAll(sel).forEach(el => {
+        if (el.tagName === 'TABLE' || el.closest('table')) return;
+        if (!tables.includes(el)) tables.push(el);
+      });
+    }
+    return tables;
+  }
+
+  // Extract row-like children from either a <table> or a div-grid container.
+  function rowsFrom(el) {
+    if (el.tagName === 'TABLE') {
+      const body = el.querySelector('tbody') || el;
+      return [...body.querySelectorAll('tr')];
+    }
+    // Prefer explicit row roles
+    let rs = [...el.querySelectorAll('[role="row"]')];
+    if (rs.length >= 2) return rs;
+    // Direct children with cells-like subchildren
+    const kids = [...el.children];
+    rs = kids.filter(c => c.children.length >= 3);
+    return rs.length >= 2 ? rs : [];
+  }
+  function cellsFrom(row) {
+    if (row.tagName === 'TR') return [...row.querySelectorAll('td,th')].map(c => (c.textContent||'').trim());
+    const cs = [...row.querySelectorAll('[role="cell"],[role="gridcell"]')];
+    if (cs.length) return cs.map(c => (c.textContent||'').trim());
+    return [...row.children].map(c => (c.textContent||'').trim());
+  }
+  function headersFrom(el) {
+    if (el.tagName === 'TABLE') {
+      const ths = [...el.querySelectorAll('thead th, thead td')];
+      if (ths.length) return ths.map(h => (h.textContent||'').trim());
+      const tr = el.querySelector('tr');
+      return tr ? [...tr.children].map(c => (c.textContent||'').trim()) : [];
+    }
+    const hdrRow = el.querySelector('[role="row"]') ||
+                   el.querySelector('.thead, .table-header, .header-row');
+    if (hdrRow) return [...hdrRow.children].map(c => (c.textContent||'').trim());
+    // fallback: first row's cells
+    const first = el.children[0];
+    return first ? [...first.children].map(c => (c.textContent||'').trim()) : [];
+  }
+
+  function scrapeAll() {
+    const site = getSite();
+    const out = {
+      site, deposits: [], withdrawals: [],
+      url: location.href, ts: new Date().toISOString(),
+      skippedRejected: 0, skippedUnknown: 0, totalRowsSeen: 0,
+      tablesScanned: 0,
+    };
+
+    collectCandidates().forEach(table => {
+      const headers = headersFrom(table);
+      if (!headers.length) return;
+
+      const ci = classifyTable(headers.map(h => h.toLowerCase()));
+      // Accept the table even if the amount column isn't obvious — we'll try
+      // to find a numeric cell per row. But require SOME headers to look
+      // transactional (date/name/status/amount).
+      const looksTxn = ci.deposit >= 0 || ci.wd >= 0 || ci.amount >= 0 ||
+                       (ci.date >= 0 && (ci.name >= 0 || ci.status >= 0));
+      if (!looksTxn) return;
+      out.tablesScanned++;
+
+      rowsFrom(table).forEach(tr => {
+        const cells = cellsFrom(tr);
+        if (cells.length < 2) return;
+        out.totalRowsSeen++;
+
+        const rowMeta = {
+          _rowText: cells.join(' | '),
+          _statusText: ci.status >= 0 ? cells[ci.status] : '',
+          _colour: rowColour(tr),
+        };
+        const status = classifyStatus(rowMeta);
+        if (status === 'rejected') { out.skippedRejected++; return; }
+        if (status === 'unknown')  { out.skippedUnknown++;  return; }
+
+        const entry = {
+          date: cleanDate(ci.date >= 0 ? cells[ci.date] : cells[0]),
+          name: ci.name >= 0 ? cells[ci.name] : '',
+          utr:  ci.utr  >= 0 ? cells[ci.utr]  : '',
+          bank: ci.bank >= 0 ? cells[ci.bank] : '',
+        };
+        const dep = ci.deposit >= 0 ? parseAmt(cells[ci.deposit]) : 0;
+        const wd  = ci.wd      >= 0 ? parseAmt(cells[ci.wd])      : 0;
+        let gen = ci.amount  >= 0 ? parseAmt(cells[ci.amount])  : 0;
+        // Fallback: pick the largest plausible numeric cell
+        if (!dep && !wd && !gen) {
+          const nums = cells.map(parseAmt).filter(n => n > 0);
+          if (nums.length) gen = Math.max(...nums);
+        }
+        const typeStr = (ci.type >= 0 ? cells[ci.type] : '').toLowerCase();
+
+        if (dep > 0) out.deposits.push({ ...entry, amount: dep });
+        else if (wd > 0) out.withdrawals.push({ ...entry, amount: wd });
+        else if (gen > 0) {
+          if (/deposit|credit|\bin\b/.test(typeStr)) out.deposits.push({ ...entry, amount: gen });
+          else if (/withdraw|debit|\bout\b/.test(typeStr)) out.withdrawals.push({ ...entry, amount: gen });
+          // URL-based fallback — panels often use separate pages for dep/wd
+          else if (/deposit|credit/i.test(location.pathname)) out.deposits.push({ ...entry, amount: gen });
+          else if (/withdraw|debit|wd/i.test(location.pathname)) out.withdrawals.push({ ...entry, amount: gen });
+        }
+      });
+    });
+
+    return out;
+  }
+
+  // ─── Badge (floating status box) ──────────────────────────────────────
+  function badge(text, kind) {
+    let b = document.getElementById(BADGE_ID);
+    if (!b) {
+      b = document.createElement('div');
+      b.id = BADGE_ID;
+      b.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:2147483647;font:12px/1.3 monospace;padding:8px 14px;border-radius:7px;cursor:pointer;max-width:360px;box-shadow:0 2px 10px rgba(0,0,0,0.4);transition:opacity .25s;';
+      b.onclick = () => (b.style.opacity = '0');
+      document.body.appendChild(b);
+    }
+    const colours = {
+      ok:   ['#060d1a', '#00d4ff'],
+      warn: ['#221700', '#ffb13b'],
+      err:  ['#220a0a', '#ff5569'],
+    }[kind || 'ok'];
+    b.style.background = colours[0];
+    b.style.border = '1px solid ' + colours[1];
+    b.style.color = colours[1];
+    b.style.opacity = '1';
+    b.textContent = text;
+    clearTimeout(b._to);
+    b._to = setTimeout(() => (b.style.opacity = '0.25'), 8000);
+  }
+
+  // ─── Client-side dedupe so we don't re-send the same rows every 30s ──
+  const lastSentKeys = new Set();
+  function dedupe(rows, kind) {
+    return rows.filter(r => {
+      const key = `${kind}|${r.utr || ''}|${r.date || ''}|${r.amount}|${(r.name || '').trim()}`;
+      if (lastSentKeys.has(key)) return false;
+      lastSentKeys.add(key);
+      return true;
+    });
+  }
+
+  // ─── Send to background (which posts to the server) ──────────────────
+  function send(data, { silent } = {}) {
+    try {
+      chrome.runtime.sendMessage({ type: 'PANEL_DATA', payload: data }, (res) => {
+        if (chrome.runtime.lastError) {
+          badge('B2C: ' + chrome.runtime.lastError.message, 'err');
+          return;
+        }
+        if (!res) { if (!silent) badge('B2C: no response from background', 'warn'); return; }
+        if (res.ok) {
+          const text = `✓ ${data.site}: +${res.inserted || 0} new · skipped ${res.skipped || 0}` +
+                       (data.skippedRejected ? ` · ${data.skippedRejected} rejected` : '');
+          badge(text, 'ok');
+        } else badge('B2C: ' + (res.error || 'error'), 'err');
+      });
+    } catch (e) {
+      badge('B2C crash: ' + e.message, 'err');
+    }
+  }
+
+  // ─── Auto-refresh loop ───────────────────────────────────────────────
+  let polling = false;
+  async function runOnce({ silent } = {}) {
+    try {
+      const all = scrapeAll();
+      // Apply client-side dedupe so /sync calls only carry new rows.
+      const payload = {
+        ...all,
+        deposits: dedupe(all.deposits, 'd'),
+        withdrawals: dedupe(all.withdrawals, 'w'),
+      };
+      if (payload.deposits.length || payload.withdrawals.length) {
+        send(payload, { silent });
+      } else if (!silent) {
+        if (all.totalRowsSeen === 0) badge(`B2C: no txn table visible on this page`, 'warn');
+        else if (all.skippedRejected + all.skippedUnknown === all.totalRowsSeen)
+          badge(`B2C: ${all.totalRowsSeen} rows, 0 approved (skipped ${all.skippedRejected} rejected, ${all.skippedUnknown} unclear)`, 'warn');
+        else badge(`B2C: no new rows since last sync`, 'ok');
+      }
+    } catch (e) {
+      badge('B2C scrape error: ' + e.message, 'err');
+      console.error('[B2C]', e);
+    }
+  }
+  function startPolling() {
+    if (polling) return;
+    polling = true;
+    badge(`B2C: auto-sync ON · approved-only · every ${POLL_MS/1000}s`, 'ok');
+    runOnce({ silent: true });
+    setInterval(() => runOnce({ silent: true }), POLL_MS);
+  }
+
+  // ─── Diagnose: dump table shapes to console (popup can show this) ────
+  function diagnose() {
+    const cands = collectCandidates();
+    const report = cands.map((t, i) => {
+      const headers = headersFrom(t);
+      const rs = rowsFrom(t);
+      const first = rs.length ? cellsFrom(rs[0]).map(c => c.slice(0, 30)) : [];
+      return {
+        idx: i,
+        tag: t.tagName + (t.className ? '.' + String(t.className).split(' ').slice(0, 2).join('.') : ''),
+        headers: headers.slice(0, 12),
+        rows: rs.length,
+        sampleFirstRow: first.slice(0, 12),
+      };
+    });
+    // Also dump URL/title so user can paste back which page they're on
+    const meta = { url: location.href, title: document.title, site: getSite() };
+    console.log('[B2C] diagnose meta', meta);
+    console.log('[B2C] diagnose tables', report);
+    badge(`B2C diagnose: ${report.length} candidate(s), see console`, 'warn');
+    return report;
+  }
+
+  // ─── Message handlers (popup / background) ──────────────────────────
+  chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
+    if (msg.type === 'SCRAPE_NOW')  { runOnce({ silent: false });   sendResponse({ ok: true }); }
+    if (msg.type === 'DIAGNOSE')    { sendResponse({ ok: true, report: diagnose() }); }
+    if (msg.type === 'PING')        { sendResponse({ ok: true, site: getSite(), url: location.href }); }
+    return true;
+  });
+
+  // ─── Boot ────────────────────────────────────────────────────────────
+  const isLogin = /login|signin|auth/i.test(location.pathname);
+  if (!isLogin && getSite() !== 'unknown') {
+    if (document.readyState === 'complete') setTimeout(startPolling, 1500);
+    else window.addEventListener('load', () => setTimeout(startPolling, 1500));
+
+    // SPA navigation handler
+    let lastUrl = location.href;
+    new MutationObserver(() => {
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        lastSentKeys.clear();
+        setTimeout(() => runOnce({ silent: true }), 2000);
+      }
+    }).observe(document.documentElement, { subtree: true, childList: true });
+  }
+})();

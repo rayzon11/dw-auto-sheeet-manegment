@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "B2C DW Sync",
+  "version": "3.0.0",
+  "description": "Sync Deposit/Withdrawal entries from gaming panels into the B2C Hisab server.",
+  "permissions": ["storage", "alarms", "notifications", "tabs", "scripting"],
+  "host_permissions": [
+    "https://panel.freeplay24.com/*",
+    "https://admin.testawl247.com/*",
+    "https://testawl247.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://*/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": [
+      "https://panel.freeplay24.com/*",
+      "https://admin.testawl247.com/*",
+      "https://testawl247.com/*"
+    ],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "B2C DW Sync"
+  },
+  "options_page": "options.html"
+}

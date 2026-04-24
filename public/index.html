@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>B2C DW Hisab</title>
+<style>
+  :root { --bg:#060d1a; --fg:#e6f1ff; --accent:#00d4ff; --mute:#7a8aa0; --card:#0d1628; --border:#1c2a44; --ok:#29d08c; --warn:#ffb13b; --err:#ff5569; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { background:#081224; border-bottom:1px solid var(--border); padding:10px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; color:var(--accent); }
+  header .spacer { flex:1; }
+  nav { display:flex; gap:4px; flex-wrap:wrap; padding:6px 16px; background:#0a1426; border-bottom:1px solid var(--border); }
+  nav button { background:transparent; color:var(--fg); border:1px solid var(--border); padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  nav button.active { background:var(--accent); color:#000; border-color:var(--accent); font-weight:600; }
+  main { padding:16px; max-width:1400px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; margin-bottom:14px; }
+  .card h2 { margin:0 0 10px; font-size:14px; color:var(--accent); text-transform:uppercase; letter-spacing:1px; }
+  input, select, button, textarea { font:inherit; }
+  input, select, textarea { background:#0a1426; border:1px solid var(--border); color:var(--fg); padding:7px 10px; border-radius:5px; }
+  input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#000; border:none; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:600; }
+  button.ghost { background:transparent; color:var(--fg); border:1px solid var(--border); padding:7px 12px; border-radius:5px; cursor:pointer; }
+  button.danger { background:transparent; color:var(--err); border:1px solid var(--err); padding:4px 8px; border-radius:4px; cursor:pointer; font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:6px 8px; text-align:left; border-bottom:1px solid var(--border); }
+  th { color:var(--mute); font-weight:500; text-transform:uppercase; font-size:11px; letter-spacing:0.5px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .row > * { flex:0 0 auto; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:8px; }
+  .totals { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:10px; }
+  .stat { background:#0a1426; border:1px solid var(--border); border-radius:6px; padding:10px; }
+  .stat .label { color:var(--mute); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; }
+  .stat .val { font-size:20px; font-weight:600; color:var(--accent); margin-top:4px; }
+  .stat.hisab .val { color:var(--ok); font-size:24px; }
+  .mute { color:var(--mute); }
+  .pill { display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; }
+  .pill.ok { background:rgba(41,208,140,0.2); color:var(--ok); }
+  .pill.err { background:rgba(255,85,105,0.2); color:var(--err); }
+  .pill.dup { background:rgba(255,177,59,0.2); color:var(--warn); }
+  #loginScreen, #appScreen { display:none; }
+  #loginScreen.show, #appScreen.show { display:block; }
+  #loginScreen { max-width:360px; margin:80px auto; }
+  #toast { position:fixed; bottom:20px; right:20px; background:var(--card); border:1px solid var(--accent); padding:10px 14px; border-radius:6px; z-index:9999; display:none; }
+  .tabpanel { display:none; }
+  .tabpanel.active { display:block; }
+  table.live { border-collapse:collapse; font-size:11px; font-family:monospace; background:#0a1424; }
+  table.live th, table.live td { border:1px solid #1c2a44; padding:3px 6px; min-width:64px; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  table.live thead th { position:sticky; top:0; background:#0f1d36; color:#00d4ff; z-index:2; }
+  table.live th.rowh { position:sticky; left:0; background:#0f1d36; color:#7a8aa0; text-align:right; z-index:3; min-width:34px; }
+  table.live td.num { text-align:right; color:#9ee6ff; }
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:100; }
+  .modal { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:18px; max-width:90vw; max-height:90vh; overflow:auto; min-width:400px; }
+  .modal h3 { margin-top:0; color:var(--accent); }
+</style>
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="card">
+    <h2>Sign in</h2>
+    <form id="loginForm">
+      <div style="margin-bottom:8px"><input id="li-user" placeholder="Username" autocomplete="username" style="width:100%"/></div>
+      <div style="margin-bottom:8px"><input id="li-pass" type="password" placeholder="Password" autocomplete="current-password" style="width:100%"/></div>
+      <label style="display:block; margin:8px 0; font-size:13px;"><input type="checkbox" id="li-remember" checked/> Remember this device for 30 days</label>
+      <button class="primary" type="submit" style="width:100%">Sign in</button>
+      <div id="loginErr" style="color:var(--err); margin-top:8px; font-size:13px;"></div>
+    </form>
+  </div>
+</div>
+
+<div id="appScreen">
+  <header>
+    <h1>B2C DW HISAB</h1>
+    <div class="row">
+      <label class="mute" style="font-size:12px">Business Date</label>
+      <input type="date" id="bdPicker" />
+      <button class="ghost" id="btnToday">Today</button>
+      <span class="mute" id="bdInfo" style="font-size:12px"></span>
+    </div>
+    <div class="spacer"></div>
+    <span class="mute" style="font-size:12px" id="whoami"></span>
+    <button class="ghost" id="btnChangePw">Change password</button>
+    <button class="ghost" id="btnLogout">Logout</button>
+  </header>
+  <nav id="tabnav">
+    <button data-tab="hisab" class="active">Hisab</button>
+    <button data-tab="dw">D/W Entries</button>
+    <button data-tab="gpay">GPay</button>
+    <button data-tab="banks">Banks</button>
+    <button data-tab="banktxn">Bank Txns</button>
+    <button data-tab="uploads">Uploads</button>
+    <button data-tab="panels">Panels</button>
+    <button data-tab="sheet">Sheet</button>
+    <button data-tab="live">Live Sheet</button>
+    <button data-tab="freeplay">Freeplay D/W</button>
+    <button data-tab="expenses">ATM / Exp</button>
+    <button data-tab="reconcile">Reconcile</button>
+    <button data-tab="admin">Admin</button>
+  </nav>
+  <main>
+    <div id="tab-hisab" class="tabpanel active">
+      <div class="card">
+        <h2>Totals for <span id="hisabDate" class="mute"></span></h2>
+        <div class="totals" id="hisabTotals"></div>
+      </div>
+    </div>
+
+    <div id="tab-dw" class="tabpanel">
+      <div class="card">
+        <h2>New Deposit / Withdrawal entry</h2>
+        <form id="dwForm" class="grid">
+          <select id="dw-type"><option>Deposit</option><option>Withdrawal</option></select>
+          <select id="dw-panel"><option value="">(panel)</option></select>
+          <input id="dw-amt" type="number" step="0.01" placeholder="Amount" required/>
+          <input id="dw-name" placeholder="Name"/>
+          <input id="dw-chips" type="number" step="0.01" placeholder="Chips"/>
+          <input id="dw-utr" placeholder="UTR"/>
+          <input id="dw-remark" placeholder="Remark"/>
+          <button class="primary" type="submit">Add</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Entries</h2>
+        <div id="dwTable"></div>
+      </div>
+    </div>
+
+    <div id="tab-gpay" class="tabpanel">
+      <div class="card">
+        <h2>New GPay entry</h2>
+        <form id="gpayForm" class="grid">
+          <select id="gp-type"><option>Received</option><option>Sent</option></select>
+          <input id="gp-amt" type="number" step="0.01" placeholder="Amount" required/>
+          <input id="gp-name" placeholder="Name"/>
+          <input id="gp-utr" placeholder="UTR"/>
+          <select id="gp-panel"><option value="">(panel)</option></select>
+          <select id="gp-bank"><option value="">(bank)</option></select>
+          <input id="gp-remark" placeholder="Remark"/>
+          <button class="primary" type="submit">Add</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>GPay rows</h2>
+        <div id="gpayTable"></div>
+      </div>
+    </div>
+
+    <div id="tab-banks" class="tabpanel">
+      <div class="card">
+        <h2>Add Bank</h2>
+        <form id="bankForm" class="grid">
+          <input id="bk-name" placeholder="Bank name" required/>
+          <input id="bk-holder" placeholder="Holder"/>
+          <input id="bk-acno" placeholder="A/c no"/>
+          <input id="bk-open" type="number" step="0.01" placeholder="Opening balance"/>
+          <button class="primary" type="submit">Add bank</button>
+        </form>
+      </div>
+      <div class="card"><h2>Banks</h2><div id="banksTable"></div></div>
+    </div>
+
+    <div id="tab-banktxn" class="tabpanel">
+      <div class="card">
+        <h2>New Bank Txn (credit / debit / charge)</h2>
+        <form id="bkTxnForm" class="grid">
+          <select id="bt-bank"><option value="">(bank)</option></select>
+          <select id="bt-type"><option value="credit">Credit</option><option value="debit">Debit</option></select>
+          <select id="bt-cat"><option value="bank">Normal</option><option value="charge">Bank Charge</option></select>
+          <input id="bt-amt" type="number" step="0.01" placeholder="Amount" required/>
+          <input id="bt-detail" placeholder="Detail / narration"/>
+          <button class="primary" type="submit">Add</button>
+        </form>
+      </div>
+      <div class="card"><h2>Bank transactions</h2><div id="bkTxnTable"></div></div>
+    </div>
+
+    <div id="tab-uploads" class="tabpanel">
+      <div class="card">
+        <h2>Upload bank statement (DCB PDF)</h2>
+        <div class="row">
+          <input type="file" id="bsFile" accept="application/pdf"/>
+          <button class="primary" id="bsPreviewBtn">Preview (auto-detect bank)</button>
+          <select id="bs-bank" title="Override if auto-detect picks the wrong bank"><option value="">(auto-detect)</option></select>
+        </div>
+        <div id="bsPreview"></div>
+      </div>
+      <div class="card">
+        <h2>Upload GPay Business statement (CSV or PDF)</h2>
+        <div class="row">
+          <input type="file" id="gpFile" accept=".csv,.pdf,.tsv,text/csv,application/pdf"/>
+          <button class="primary" id="gpPreviewBtn">Preview</button>
+        </div>
+        <div id="gpPreview"></div>
+      </div>
+    </div>
+
+    <div id="tab-panels" class="tabpanel">
+      <div class="card">
+        <h2>Add panel</h2>
+        <form id="panelForm" class="grid">
+          <input id="pn-name" placeholder="Display name" required/>
+          <input id="pn-slug" placeholder="slug (e.g. freeplay24)" required/>
+          <input id="pn-url" placeholder="URL"/>
+          <input id="pn-open" type="number" step="0.01" placeholder="Open chips"/>
+          <input id="pn-close" type="number" step="0.01" placeholder="Close chips"/>
+          <button class="primary" type="submit">Add</button>
+        </form>
+      </div>
+      <div class="card"><h2>Panels</h2><div id="panelsTable"></div></div>
+      <div class="card"><h2>Extension last-sync</h2><div id="panelSyncInfo" class="mute">—</div></div>
+    </div>
+
+    <div id="tab-sheet" class="tabpanel">
+      <div class="card">
+        <h2>Master Sheet (DW SHEET DEMO NEW 11-03-26.xlsx)</h2>
+        <p class="mute" style="font-size:13px;margin:4px 0 10px">
+          The sheet is registered on the server. Clicking <b>Download filled sheet</b> takes the
+          master template and stamps all entries for the selected business date into the exact cells
+          (6 panels 1XBET0001–1XBET0006, banks, DW summary, Bank Charge / Salary / ATM / Extra Payment,
+          and Parking Payment Transfer). Re-download anytime; the master is never modified.
+        </p>
+        <div class="row">
+          <button class="primary" id="btnDownloadXlsx">Download filled sheet (.xlsx)</button>
+          <button class="primary" id="btnPushGoogle">Push to Google Sheet (live)</button>
+          <button class="ghost" id="btnPreviewSheet">Preview rows</button>
+          <a class="ghost" href="/extension.zip" style="text-decoration:none;padding:8px 14px;border:1px solid var(--border);border-radius:5px;color:var(--fg)">Download Chrome extension (.zip)</a>
+        </div>
+        <div id="googleStatus" class="mute" style="margin-top:6px;font-size:12px"></div>
+        <div id="sheetStatus" class="mute" style="margin-top:8px;font-size:12px"></div>
+      </div>
+      <div class="card">
+        <h2>Preview — rows that will be written</h2>
+        <div id="sheetPreview" class="mute">Click <b>Preview</b> above.</div>
+      </div>
+      <div class="card">
+        <h2>Chrome extension install</h2>
+        <ol style="font-size:13px;line-height:1.7">
+          <li>Click <b>Download Chrome extension (.zip)</b> above, unzip anywhere.</li>
+          <li>Open Chrome → <code>chrome://extensions</code> → toggle <b>Developer mode</b> (top-right).</li>
+          <li>Click <b>Load unpacked</b> → select the unzipped <code>extension/</code> folder.</li>
+          <li>Click the extension icon → <b>Options</b>. Paste:
+            <ul>
+              <li>Server URL: <code id="serverUrl"></code></li>
+              <li>API Token: generate from the <b>Admin → API tokens</b> tab</li>
+            </ul>
+          </li>
+          <li>Log into <code>panel.freeplay24.com</code> and <code>admin.testawl247.com</code> with <code>Maha0001 / Asdf@1234</code>, open a deposit/withdrawal page, click the extension popup → <b>Sync now</b>.</li>
+        </ol>
+      </div>
+    </div>
+
+    <div id="tab-live" class="tabpanel">
+      <div class="card">
+        <h2>Live Sheet — business date <span id="liveBD" class="mute" style="font-weight:400"></span></h2>
+        <div class="row">
+          <label class="mute" style="font-size:12px">Date</label>
+          <input type="date" id="live-date"/>
+          <button class="primary" id="liveRefresh">Refresh now</button>
+          <label class="mute" style="font-size:12px"><input type="checkbox" id="liveAuto" checked/> Auto-refresh 10s</label>
+          <label class="mute" style="font-size:12px">View:
+            <select id="liveView">
+              <option value="local">Local grid (from our DB)</option>
+              <option value="google">Embedded Google Sheet (live)</option>
+            </select>
+          </label>
+          <span id="liveStatus" class="mute" style="font-size:11px"></span>
+          <a id="liveOpenGS" href="#" target="_blank" class="ghost" style="display:none;text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:12px">Open in new tab ↗</a>
+        </div>
+        <div id="liveGrid" style="overflow:auto;max-height:72vh;margin-top:10px;border:1px solid var(--border);border-radius:4px"></div>
+        <iframe id="liveIframe" style="display:none;width:100%;height:72vh;margin-top:10px;border:1px solid var(--border);border-radius:4px;background:#fff"></iframe>
+      </div>
+    </div>
+
+    <div id="tab-freeplay" class="tabpanel">
+      <div class="card">
+        <h2>Freeplay24 — Deposit / Withdrawal</h2>
+        <p class="mute" style="font-size:13px;margin:4px 0 10px">
+          Only APPROVED rows captured by the Chrome extension. Auto-refreshes every 15s.
+        </p>
+        <div class="row">
+          <label class="mute" style="font-size:12px">Date</label>
+          <input type="date" id="fp-date"/>
+          <button class="primary" id="fpRefresh">Refresh</button>
+          <span id="fpLastSync" class="mute" style="font-size:11px"></span>
+        </div>
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-top:10px">
+          <div>
+            <h3 style="margin:0 0 6px">Deposits <span id="fpDepTotal" class="mute" style="font-weight:400"></span></h3>
+            <div id="fpDepTable" style="max-height:56vh;overflow:auto"></div>
+          </div>
+          <div>
+            <h3 style="margin:0 0 6px">Withdrawals <span id="fpWdlTotal" class="mute" style="font-weight:400"></span></h3>
+            <div id="fpWdlTable" style="max-height:56vh;overflow:auto"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-expenses" class="tabpanel">
+      <div class="card">
+        <h2>ATM withdrawal</h2>
+        <p class="mute" style="font-size:13px;margin:4px 0 10px">
+          Cash drawn from ATM. Captures the employee who withdrew it — shown in the sheet under Bank &amp; Exp Ledger as <code>ATM (Employee Name)</code>.
+        </p>
+        <form id="atmForm" class="grid" style="grid-template-columns:repeat(4, 1fr);gap:8px">
+          <input required placeholder="Amount" id="atm-amt" type="number" step="0.01"/>
+          <input required placeholder="Employee name (who withdrew)" id="atm-emp"/>
+          <select id="atm-bank"><option value="">— bank (optional, for ref) —</option></select>
+          <input placeholder="Remark (optional)" id="atm-remark"/>
+          <button class="primary" type="submit" style="grid-column:span 4">Add ATM withdrawal</button>
+        </form>
+        <h3 style="margin-top:14px">Today's ATM + Expenses</h3>
+        <div id="expTable"></div>
+      </div>
+      <div class="card">
+        <h2>Other expense</h2>
+        <form id="expForm" class="grid" style="grid-template-columns:repeat(4, 1fr);gap:8px">
+          <select required id="exp-cat">
+            <option value="salary">Salary</option>
+            <option value="extra_payment">Extra Payment</option>
+            <option value="free_chips">Free Chips</option>
+            <option value="bank_charge">Bank Charge</option>
+            <option value="parking_in">Parking IN</option>
+            <option value="parking_out">Parking OUT</option>
+          </select>
+          <input required placeholder="Amount" id="exp-amt" type="number" step="0.01"/>
+          <input placeholder="Remark" id="exp-remark"/>
+          <button class="primary" type="submit">Add</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="tab-reconcile" class="tabpanel">
+      <div class="card">
+        <h2>Balance-gap reconciliation</h2>
+        <p class="mute" style="font-size:13px;margin:4px 0 10px">
+          For each bank, compares consecutive SMS balances. If the running balance doesn't match
+          the sum of captured credits/debits, a txn was missed. The gap amount + time window
+          tells you exactly what to look up in your bank app and enter manually.
+        </p>
+        <div class="row">
+          <label class="mute" style="font-size:12px">From</label><input type="date" id="rc-from"/>
+          <label class="mute" style="font-size:12px">To</label><input type="date" id="rc-to"/>
+          <button class="primary" id="rcScan">Scan</button>
+        </div>
+        <div id="rcResult" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <div id="tab-admin" class="tabpanel">
+      <div class="card" id="userAdminCard">
+        <h2>Users (admin only)</h2>
+        <form id="userForm" class="grid">
+          <input id="u-name" placeholder="Username" required/>
+          <input id="u-pass" placeholder="Password" required/>
+          <select id="u-role">
+            <option value="operator">operator (D/W)</option>
+            <option value="deposit_operator">deposit operator (Freeplay deposits only)</option>
+            <option value="withdrawal_operator">withdrawal operator (Freeplay withdrawals only)</option>
+            <option value="manager">manager (full access)</option>
+            <option value="admin">admin</option>
+          </select>
+          <button class="primary" type="submit">Create user</button>
+        </form>
+        <div id="usersTable" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <h2>API tokens (for Chrome extension)</h2>
+        <form id="tokForm" class="row">
+          <input id="tok-label" placeholder="Label (e.g. my-chrome)"/>
+          <button class="primary" type="submit">Generate token</button>
+        </form>
+        <div id="tokenList" style="margin-top:10px"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
