@@ -252,23 +252,48 @@
     </div>
 
     <div id="tab-live" class="tabpanel">
+      <div class="card" id="liveBanner" style="padding:10px 14px">
+        <div class="row" style="align-items:center">
+          <b style="color:var(--accent)">Current business date:</b>
+          <span id="bdNow" style="font-weight:600">—</span>
+          <span class="mute" style="font-size:12px">· Next rollover at 05:30 IST in <b id="bdCountdown">—</b> (opens <span id="bdNext">—</span>)</span>
+          <div class="spacer"></div>
+          <span id="bdLast" class="mute" style="font-size:11px"></span>
+        </div>
+      </div>
       <div class="card">
-        <h2>Live Sheet — business date <span id="liveBD" class="mute" style="font-weight:400"></span></h2>
-        <div class="row">
-          <label class="mute" style="font-size:12px">Date</label>
-          <input type="date" id="live-date"/>
-          <button class="primary" id="liveRefresh">Refresh now</button>
-          <label class="mute" style="font-size:12px"><input type="checkbox" id="liveAuto" checked/> Auto-refresh 10s</label>
+        <div class="row" style="align-items:center">
+          <h2 style="margin:0">Live Sheet</h2>
+          <div class="spacer"></div>
+          <button class="ghost" id="liveDatePrev">‹ Prev</button>
+          <input type="date" id="live-date" style="width:150px"/>
+          <button class="ghost" id="liveDateNext">Next ›</button>
+          <button class="ghost" id="liveDateToday">Today</button>
+          <select id="liveDateHist" title="Dates with data"><option value="">— history —</option></select>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="primary" id="liveRefresh">Refresh</button>
+          <label class="mute" style="font-size:12px"><input type="checkbox" id="liveAuto" checked/> Auto 10s</label>
           <label class="mute" style="font-size:12px">View:
             <select id="liveView">
-              <option value="local">Local grid (from our DB)</option>
-              <option value="google">Embedded Google Sheet (live)</option>
+              <option value="local">Local grid</option>
+              <option value="google">Embedded Google Sheet</option>
             </select>
           </label>
+          <div class="spacer"></div>
           <span id="liveStatus" class="mute" style="font-size:11px"></span>
-          <a id="liveOpenGS" href="#" target="_blank" class="ghost" style="display:none;text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:12px">Open in new tab ↗</a>
+          <a id="liveOpenGS" href="#" target="_blank" class="ghost" style="display:none;text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:12px">Open ↗</a>
         </div>
-        <div id="liveGrid" style="overflow:auto;max-height:72vh;margin-top:10px;border:1px solid var(--border);border-radius:4px"></div>
+        <div id="adminControls" style="display:none;margin-top:10px;padding:10px;background:#0a1424;border:1px solid #1c2a44;border-radius:5px">
+          <b style="color:#ffb13b">Admin controls</b>
+          <div class="row" style="margin-top:8px">
+            <button class="primary" id="btnForceRollover">Force rollover now</button>
+            <button class="danger" id="btnResetDate">Reset this date (wipe all entries)</button>
+            <button class="ghost" id="btnArchiveXlsx">Download snapshot (.xlsx)</button>
+            <button class="ghost" id="btnPushGoogleNow">Push snapshot to Google Sheet</button>
+          </div>
+        </div>
+        <div id="liveGrid" style="overflow:auto;max-height:68vh;margin-top:10px;border:1px solid var(--border);border-radius:4px"></div>
         <iframe id="liveIframe" style="display:none;width:100%;height:72vh;margin-top:10px;border:1px solid var(--border);border-radius:4px;background:#fff"></iframe>
       </div>
     </div>

@@ -160,7 +160,24 @@
   let liveTimer = null;
   function initLiveTab() {
     $('#live-date').value = BD;
-    $('#liveBD').textContent = BD;
+    // Show admin-only controls
+    if (ME && ME.role === 'admin') $('#adminControls').style.display = 'block';
+    // Date nav wiring (idempotent)
+    ['liveDatePrev','liveDateNext','liveDateToday','liveDateHist'].forEach(id => {
+      const el = $('#' + id); if (!el || el._wired) return; el._wired = true;
+    });
+    // Load history options
+    api('/api/sheet/dates').then(r => {
+      const h = $('#liveDateHist');
+      if (!h) return;
+      h.innerHTML = '<option value="">— history —</option>' +
+        (r.rows || []).map(x => `<option value="${x.business_date}">${x.business_date} · ${x.entries} rows</option>`).join('');
+    }).catch(()=>{});
+    // Rollover banner tick
+    tickRolloverBanner();
+    if (!window._rolloverTick) {
+      window._rolloverTick = setInterval(tickRolloverBanner, 1000);
+    }
     // Wire view-switcher
     const viewSel = $('#liveView');
     if (viewSel && !viewSel._wired) {
@@ -174,6 +191,37 @@
       if ($('#liveView').value === 'local' && $('#liveAuto').checked) renderLiveGrid(true);
     }, 10000);
   }
+  // Rollover banner: shows countdown to next 05:30 IST + last-rollover info.
+  let rolloverCache = null;
+  async function tickRolloverBanner() {
+    try {
+      // Only refetch every ~10s; between ticks, recompute countdown locally.
+      if (!rolloverCache || Date.now() - rolloverCache._at > 10_000) {
+        const r = await api('/api/sheet/rollover/status');
+        rolloverCache = { ...r, _at: Date.now(), _serverMs: r.next_ms, _serverLocalAt: Date.now() };
+      }
+      if (!rolloverCache) return;
+      const elapsed = Date.now() - rolloverCache._serverLocalAt;
+      const remaining = Math.max(0, rolloverCache._serverMs - elapsed);
+      const h = Math.floor(remaining / 3_600_000);
+      const m = Math.floor((remaining % 3_600_000) / 60_000);
+      const s = Math.floor((remaining % 60_000) / 1000);
+      if ($('#bdNow')) $('#bdNow').textContent = rolloverCache.current_business_date;
+      if ($('#bdCountdown')) $('#bdCountdown').textContent = `${h}h ${m}m ${s}s`;
+      if ($('#bdNext')) $('#bdNext').textContent = rolloverCache.next_business_date;
+      if ($('#bdLast') && rolloverCache.last_rollover_ts) {
+        $('#bdLast').textContent = 'Last rollover: ' + new Date(rolloverCache.last_rollover_ts).toLocaleString();
+      }
+      // Auto-jump to new date if system rolled over while the user was on the page
+      if (rolloverCache.current_business_date !== BD && $('#tab-live').classList.contains('active')) {
+        BD = rolloverCache.current_business_date;
+        $('#live-date').value = BD;
+        if ($('#liveView').value === 'local') renderLiveGrid(true);
+        toast('New business date: ' + BD);
+      }
+    } catch (_) {}
+  }
+
   async function applyLiveView() {
     const v = $('#liveView').value;
     if (v === 'google') {
@@ -201,6 +249,11 @@
     }
   }
   async function renderLiveGrid(silent) {
+    // Make sure we're in the local-grid view
+    const view = $('#liveView') && $('#liveView').value;
+    if (view === 'google') return;
+    $('#liveGrid').style.display = 'block';
+    $('#liveIframe').style.display = 'none';
     const d = $('#live-date').value || BD;
     if (!silent) $('#liveStatus').textContent = 'Loading…';
     try {
@@ -285,11 +338,69 @@
       wireDel('#expTable', loadExpenses);
     } catch {}
   }
-  document.addEventListener('click', (e) => {
+  function shiftDate(iso, delta) {
+    const d = new Date(iso + 'T12:00:00');
+    d.setDate(d.getDate() + delta);
+    return d.toISOString().slice(0, 10);
+  }
+
+  document.addEventListener('click', async (e) => {
     if (e.target.id === 'liveRefresh') {
       if ($('#liveView').value === 'google') applyLiveView(); else renderLiveGrid();
     }
+    if (e.target.id === 'liveDatePrev') {
+      $('#live-date').value = shiftDate($('#live-date').value, -1);
+      renderLiveGrid();
+    }
+    if (e.target.id === 'liveDateNext') {
+      $('#live-date').value = shiftDate($('#live-date').value, 1);
+      renderLiveGrid();
+    }
+    if (e.target.id === 'liveDateToday') {
+      $('#live-date').value = BD;
+      renderLiveGrid();
+    }
     if (e.target.id === 'fpRefresh') loadFreeplay();
+
+    // Admin controls
+    if (e.target.id === 'btnForceRollover') {
+      if (!confirm('Run rollover now? Archives today and marks the boundary.')) return;
+      try {
+        const r = await api('/api/sheet/rollover/run', { method: 'POST', body: {} });
+        toast('Rollover done · archived ' + (r.info?.archived ? 'OK' : 'skipped (no template)'));
+        rolloverCache = null; tickRolloverBanner();
+      } catch (err) { toast(err.message, true); }
+    }
+    if (e.target.id === 'btnResetDate') {
+      const d = $('#live-date').value;
+      const typed = prompt(`WIPE ALL ENTRIES for ${d}? This cannot be undone. Type the date to confirm:`);
+      if (typed !== d) return;
+      try {
+        const r = await api('/api/sheet/reset', { method: 'POST', body: { date: d, confirm: d } });
+        toast(`Deleted: ${r.deleted.bank_txns} bank + ${r.deleted.dw} D/W + ${r.deleted.gpay} GPay + ${r.deleted.expenses} exp`);
+        renderLiveGrid();
+      } catch (err) { toast(err.message, true); }
+    }
+    if (e.target.id === 'btnArchiveXlsx') {
+      const d = $('#live-date').value;
+      window.open(`/api/sheet/xlsx?date=${encodeURIComponent(d)}`, '_blank');
+    }
+    if (e.target.id === 'btnPushGoogleNow') {
+      const d = $('#live-date').value;
+      try {
+        const r = await api('/api/sheet/google', { method: 'POST', body: { date: d } });
+        toast(`Pushed to Google Sheet — ${r.updated} cells in ${r.ranges} ranges`);
+      } catch (err) { toast(err.message, true); }
+    }
+  });
+  document.addEventListener('change', (e) => {
+    if (e.target.id === 'liveDateHist' && e.target.value) {
+      $('#live-date').value = e.target.value;
+      renderLiveGrid();
+    }
+    if (e.target.id === 'live-date') {
+      renderLiveGrid();
+    }
   });
   document.addEventListener('submit', async (e) => {
     if (e.target.id === 'atmForm') {

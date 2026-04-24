@@ -84,4 +84,5 @@ app.get('*', (req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`\n  B2C Hisab server running:  http://localhost:${PORT}\n  DB:  ${require('./lib/db').DB_PATH}\n`);
+  try { require('./lib/rollover').start(); } catch (e) { console.error('rollover scheduler:', e); }
 });

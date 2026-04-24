@@ -100,6 +100,69 @@ router.post('/google', A.requireAuth, async (req, res) => {
   }
 });
 
+// List every date that has at least one entry — for the admin's history picker.
+router.get('/dates', A.requireAuth, (req, res) => {
+  const rows = db.prepare(`
+    SELECT d AS business_date, SUM(cnt) AS entries FROM (
+      SELECT business_date AS d, COUNT(*) AS cnt FROM bank_txns GROUP BY business_date
+      UNION ALL SELECT business_date, COUNT(*) FROM dw GROUP BY business_date
+      UNION ALL SELECT business_date, COUNT(*) FROM gpay GROUP BY business_date
+      UNION ALL SELECT business_date, COUNT(*) FROM expenses GROUP BY business_date
+    ) GROUP BY d ORDER BY d DESC
+  `).all();
+  res.json({ ok: true, rows });
+});
+
+// Rollover status — UI uses this for the countdown banner.
+router.get('/rollover/status', A.requireAuth, (req, res) => {
+  const { nextRolloverInfo, currentBusinessDate } = require('../lib/businessDate');
+  const last = db.prepare("SELECT value FROM settings WHERE key = 'last_rollover'").get();
+  const lastDate = db.prepare("SELECT value FROM settings WHERE key = 'last_rollover_date'").get();
+  const info = nextRolloverInfo();
+  res.json({ ok: true,
+    current_business_date: currentBusinessDate(),
+    next_in: info.hms,
+    next_ms: info.ms,
+    next_business_date: info.nextBusinessDate,
+    last_rollover_ts: last ? last.value : null,
+    last_rollover_date: lastDate ? lastDate.value : null,
+  });
+});
+
+// Force a rollover now (admin). Useful to trigger the archive snapshot manually.
+router.post('/rollover/run', A.requireAuth, A.requireAdmin, async (req, res) => {
+  try {
+    const info = await require('../lib/rollover').runRollover('manual');
+    audit(req.user.id, 'rollover', 'manual', null, info);
+    res.json({ ok: true, info });
+  } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+});
+
+// Reset (wipe) all entries for a specific business_date. Admin-only, audited.
+router.post('/reset', A.requireAuth, A.requireAdmin, (req, res) => {
+  const { date, confirm } = req.body || {};
+  if (!date || confirm !== date) {
+    return res.status(400).json({ ok: false, error: 'pass { date, confirm: <same date> }' });
+  }
+  const r1 = db.prepare('DELETE FROM bank_txns WHERE business_date = ?').run(date);
+  const r2 = db.prepare('DELETE FROM dw WHERE business_date = ?').run(date);
+  const r3 = db.prepare('DELETE FROM gpay WHERE business_date = ?').run(date);
+  const r4 = db.prepare('DELETE FROM expenses WHERE business_date = ?').run(date);
+  const deleted = { bank_txns: r1.changes, dw: r2.changes, gpay: r3.changes, expenses: r4.changes };
+  audit(req.user.id, 'reset', 'business_date', null, { date, deleted });
+  res.json({ ok: true, date, deleted });
+});
+
+// Inline edit of a single bank's opening balance (admin control).
+router.post('/banks/:id/open', A.requireAuth, A.requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const amt = Number(req.body?.open_balance);
+  if (!id || !Number.isFinite(amt)) return res.status(400).json({ ok: false, error: 'bad id/amt' });
+  db.prepare('UPDATE banks SET open_balance = ? WHERE id = ?').run(amt, id);
+  audit(req.user.id, 'update', 'bank_open_balance', id, { open_balance: amt });
+  res.json({ ok: true });
+});
+
 // Live 2D grid for the Google-Sheets-style viewer in the web app.
 router.get('/grid', A.requireAuth, (req, res) => {
   const date = req.query.date || currentBusinessDate();
