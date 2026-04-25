@@ -85,7 +85,8 @@
     <button class="ghost" id="btnLogout">Logout</button>
   </header>
   <nav id="tabnav">
-    <button data-tab="hisab" class="active">Hisab</button>
+    <button data-tab="live" class="active">Live Sheet</button>
+    <button data-tab="hisab">Hisab</button>
     <button data-tab="dw">D/W Entries</button>
     <button data-tab="gpay">GPay</button>
     <button data-tab="banks">Banks</button>
@@ -93,14 +94,13 @@
     <button data-tab="uploads">Uploads</button>
     <button data-tab="panels">Panels</button>
     <button data-tab="sheet">Sheet</button>
-    <button data-tab="live">Live Sheet</button>
     <button data-tab="freeplay">Freeplay D/W</button>
     <button data-tab="expenses">ATM / Exp</button>
     <button data-tab="reconcile">Reconcile</button>
     <button data-tab="admin">Admin</button>
   </nav>
   <main>
-    <div id="tab-hisab" class="tabpanel active">
+    <div id="tab-hisab" class="tabpanel">
       <div class="card">
         <h2>Totals for <span id="hisabDate" class="mute"></span></h2>
         <div class="totals" id="hisabTotals"></div>
@@ -251,7 +251,7 @@
       </div>
     </div>
 
-    <div id="tab-live" class="tabpanel">
+    <div id="tab-live" class="tabpanel active">
       <div class="card" id="liveBanner" style="padding:10px 14px">
         <div class="row" style="align-items:center">
           <b style="color:var(--accent)">Current business date:</b>
@@ -405,6 +405,6 @@
 
 <div id="toast"></div>
 
-<script src="/app.js"></script>
+<script src="/app.js?v=20260425b"></script>
 </body>
 </html>

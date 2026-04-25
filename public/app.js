@@ -519,8 +519,10 @@
     BD = h.business_date;
     $('#bdPicker').value = BD;
     $('#bdInfo').textContent = '(day rolls over at 05:30 IST)';
-    loadHisab();
     loadDropdowns();
+    // Default tab = Live Sheet so the user always sees the sheet on login
+    initLiveTab();
+    loadHisab();
   }
 
   $('#bdPicker').addEventListener('change', (e) => {
