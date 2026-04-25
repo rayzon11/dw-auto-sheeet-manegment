@@ -261,7 +261,9 @@
       const g = r.grid || [];
       const colors = r.colors || [];
       const fontColors = r.fontColors || [];
+      const fontBold = r.fontBold || [];
       const merges = r.merges || [];
+      const colWidths = r.colWidths || [];
       const COL_LETTERS = (n) => { let s=''; while (n>=0){ s=String.fromCharCode(65+(n%26))+s; n=Math.floor(n/26)-1; } return s; };
       // Find last non-empty row and column to trim display, but extend
       // through any styled (colored) area so the template look-and-feel
@@ -269,7 +271,9 @@
       let lastR = 0, lastC = 0;
       g.forEach((row, ri) => row.forEach((v, ci) => { if (v !== '' && v != null) { if (ri > lastR) lastR = ri; if (ci > lastC) lastC = ci; } }));
       colors.forEach((row, ri) => row.forEach((c, ci) => { if (c) { if (ri > lastR) lastR = ri; if (ci > lastC) lastC = ci; } }));
-      lastR = Math.max(lastR, 55); lastC = Math.max(lastC, 18);
+      // Use full template extent (already trimmed server-side)
+      lastR = Math.max(lastR, (r.rows || 0) - 1);
+      lastC = Math.max(lastC, (r.cols || 0) - 1);
       // Merge map: any cell hidden by a merge anchor gets skipped
       const skip = new Set();
       const span = {}; // 'r,c' -> {rs, cs}
@@ -280,7 +284,12 @@
           skip.add(`${rr},${cc}`);
         }
       });
-      let html = '<table class="live"><thead><tr><th class="rowh"></th>';
+      let html = '<table class="live"><colgroup><col style="width:38px"/>';
+      for (let c = 0; c <= lastC; c++) {
+        const w = colWidths[c] || 90;
+        html += `<col style="width:${Math.max(40, Math.min(220, w))}px"/>`;
+      }
+      html += '</colgroup><thead><tr><th class="rowh"></th>';
       for (let c = 0; c <= lastC; c++) html += `<th>${COL_LETTERS(c)}</th>`;
       html += '</tr></thead><tbody>';
       for (let ri = 0; ri <= lastR; ri++) {
@@ -306,6 +315,7 @@
             const lum = (0.299*r2 + 0.587*gg + 0.114*bb);
             styles.push(`color:${lum > 140 ? '#000' : '#fff'}`);
           }
+          if (fontBold[ri] && fontBold[ri][c]) styles.push('font-weight:600');
           const styleAttr = styles.length ? ` style="${styles.join(';')}"` : '';
           // Editable cells: mark with data-r/data-c so we can persist edits
           const editAttr = ` contenteditable="true" data-r="${ri}" data-c="${c}"`;

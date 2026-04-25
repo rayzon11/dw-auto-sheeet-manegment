@@ -170,20 +170,43 @@ router.get('/grid', A.requireAuth, (req, res) => {
     const data = buildDataForDate(db, date);
     const g = buildGrid(data);
     const tpl = getTemplatePath();
-    const styles = tpl ? loadTemplateStyles(tpl) : { colors: [], fontColors: [], merges: [], colWidths: [] };
-    // Layer manual overrides on top of computed cells
+    const styles = tpl ? loadTemplateStyles(tpl) : { colors: [], fontColors: [], fontBold: [], tplValues: [], merges: [], colWidths: [] };
+    // Build the final grid: start from the template's own labels & static
+    // values (so headings like "Bank Balance Error Chek", "Total DW Details",
+    // "Panel Name", "Total Deposit", "GPay Account Details", etc. all show
+    // up); then overlay computed live data, then user overrides on top.
+    const ROWS = Math.max(g.rows, styles.rows || 0);
+    const COLS = Math.max(g.cols, styles.cols || 0);
+    const grid = Array.from({ length: ROWS }, () => Array(COLS).fill(''));
+    // Layer 1: template's own text/number values (the look)
+    if (styles.tplValues) {
+      for (let r = 0; r < styles.tplValues.length; r++) {
+        for (let c = 0; c < styles.tplValues[r].length; c++) {
+          const v = styles.tplValues[r][c];
+          if (v !== '' && v != null) grid[r][c] = v;
+        }
+      }
+    }
+    // Layer 2: computed live data (overwrites template's placeholder zeros)
+    for (let r = 0; r < g.grid.length; r++) {
+      for (let c = 0; c < g.grid[r].length; c++) {
+        const v = g.grid[r][c];
+        if (v !== '' && v != null) grid[r][c] = v;
+      }
+    }
+    // Layer 3: manual overrides on top
     const ovs = db.prepare('SELECT row, col, value FROM sheet_overrides WHERE business_date = ?').all(date);
     const overrides = {};
     for (const o of ovs) {
       overrides[`${o.row},${o.col}`] = o.value;
-      if (g.grid[o.row]) {
-        const num = Number(o.value);
-        g.grid[o.row][o.col] = (o.value !== '' && !isNaN(num) && /^-?\d+(\.\d+)?$/.test(String(o.value))) ? num : o.value;
+      if (grid[o.row]) {
+        const isNum = o.value !== '' && /^-?\d+(\.\d+)?$/.test(String(o.value));
+        grid[o.row][o.col] = isNum ? Number(o.value) : o.value;
       }
     }
     res.json({ ok: true, business_date: date,
-      grid: g.grid, rows: g.rows, cols: g.cols,
-      colors: styles.colors, fontColors: styles.fontColors,
+      grid, rows: ROWS, cols: COLS,
+      colors: styles.colors, fontColors: styles.fontColors, fontBold: styles.fontBold,
       merges: styles.merges, colWidths: styles.colWidths,
       overrides,
       generated_at: new Date().toISOString() });

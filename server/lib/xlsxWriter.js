@@ -193,18 +193,34 @@ function loadTemplateStyles(templatePath) {
     const wb = XLSX.readFile(templatePath, { cellStyles: true });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
-    const ROWS = Math.min(range.e.r + 1, 200);
-    const COLS = Math.min(range.e.c + 1, 220);
-    const colors = Array.from({ length: ROWS }, () => Array(COLS).fill(''));
+    // Determine the actual content extent — find last row/col that has any text/color
+    let lastRow = 0, lastCol = 0;
+    const HARD_MAX_ROW = Math.min(range.e.r, 120);  // sheet has 1000 rows of empty noise
+    const HARD_MAX_COL = Math.min(range.e.c, 50);   // and PV (440) cols, mostly empty
+    for (let r = 0; r <= HARD_MAX_ROW; r++) {
+      for (let c = 0; c <= HARD_MAX_COL; c++) {
+        const cell = ws[XLSX.utils.encode_cell({ r, c })];
+        if (cell && (cell.v != null || (cell.s && cell.s.patternType === 'solid'))) {
+          if (r > lastRow) lastRow = r;
+          if (c > lastCol) lastCol = c;
+        }
+      }
+    }
+    const ROWS = lastRow + 2;
+    const COLS = lastCol + 2;
+    const colors     = Array.from({ length: ROWS }, () => Array(COLS).fill(''));
     const fontColors = Array.from({ length: ROWS }, () => Array(COLS).fill(''));
+    const fontBold   = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
+    const tplValues  = Array.from({ length: ROWS }, () => Array(COLS).fill(''));
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
         const a = XLSX.utils.encode_cell({ r, c });
         const cell = ws[a];
-        if (!cell || !cell.s) continue;
+        if (!cell) continue;
+        if (cell.v != null) tplValues[r][c] = cell.v;
+        if (!cell.s) continue;
         const fg = cell.s.fgColor;
         if (fg && fg.rgb && cell.s.patternType === 'solid') {
-          // xlsx may give 6-char (RRGGBB) or 8-char (AARRGGBB) hex; take last 6.
           const hex = fg.rgb.length >= 8 ? fg.rgb.slice(2) : fg.rgb.padStart(6, '0');
           if (hex !== 'FFFFFF' && hex !== '000000') colors[r][c] = '#' + hex;
         }
@@ -213,16 +229,18 @@ function loadTemplateStyles(templatePath) {
           const hex = ft.rgb.length >= 8 ? ft.rgb.slice(2) : ft.rgb.padStart(6, '0');
           fontColors[r][c] = '#' + hex;
         }
+        if (cell.s.bold || (cell.s.font && cell.s.font.bold)) fontBold[r][c] = true;
       }
     }
-    const merges = (ws['!merges'] || []).map(m => ({
-      r1: m.s.r, c1: m.s.c, r2: m.e.r, c2: m.e.c
-    }));
-    const colWidths = (ws['!cols'] || []).map(c => c && c.wpx ? c.wpx : 0);
-    _styleCache = { _path: templatePath, colors, fontColors, merges, colWidths, rows: ROWS, cols: COLS };
+    // Filter merges to those within our trimmed range
+    const merges = (ws['!merges'] || [])
+      .filter(m => m.e.r < ROWS && m.e.c < COLS)
+      .map(m => ({ r1: m.s.r, c1: m.s.c, r2: m.e.r, c2: m.e.c }));
+    const colWidths = (ws['!cols'] || []).slice(0, COLS).map(c => c && c.wpx ? c.wpx : 0);
+    _styleCache = { _path: templatePath, colors, fontColors, fontBold, tplValues, merges, colWidths, rows: ROWS, cols: COLS };
     return _styleCache;
   } catch (e) {
-    return { colors: [], fontColors: [], merges: [], colWidths: [], rows: 0, cols: 0 };
+    return { colors: [], fontColors: [], fontBold: [], tplValues: [], merges: [], colWidths: [], rows: 0, cols: 0 };
   }
 }
 function buildGrid(data) {
