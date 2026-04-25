@@ -183,6 +183,48 @@ function buildDataForDate(db, business_date) {
 
 // Render the same data as a 2D JS array [rows][cols] — used by the live
 // Google-Sheets-like viewer in the web app. Mirrors writeWorkbook's layout.
+// Cache of {colors, merges, colWidths} extracted from the master template.
+// Read once, reused on every /grid request — keeps the live view ditto-styled
+// without re-parsing the workbook on each call.
+let _styleCache = null;
+function loadTemplateStyles(templatePath) {
+  if (_styleCache && _styleCache._path === templatePath) return _styleCache;
+  try {
+    const wb = XLSX.readFile(templatePath, { cellStyles: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+    const ROWS = Math.min(range.e.r + 1, 200);
+    const COLS = Math.min(range.e.c + 1, 220);
+    const colors = Array.from({ length: ROWS }, () => Array(COLS).fill(''));
+    const fontColors = Array.from({ length: ROWS }, () => Array(COLS).fill(''));
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const a = XLSX.utils.encode_cell({ r, c });
+        const cell = ws[a];
+        if (!cell || !cell.s) continue;
+        const fg = cell.s.fgColor;
+        if (fg && fg.rgb && cell.s.patternType === 'solid') {
+          // xlsx may give 6-char (RRGGBB) or 8-char (AARRGGBB) hex; take last 6.
+          const hex = fg.rgb.length >= 8 ? fg.rgb.slice(2) : fg.rgb.padStart(6, '0');
+          if (hex !== 'FFFFFF' && hex !== '000000') colors[r][c] = '#' + hex;
+        }
+        const ft = cell.s.color;
+        if (ft && ft.rgb) {
+          const hex = ft.rgb.length >= 8 ? ft.rgb.slice(2) : ft.rgb.padStart(6, '0');
+          fontColors[r][c] = '#' + hex;
+        }
+      }
+    }
+    const merges = (ws['!merges'] || []).map(m => ({
+      r1: m.s.r, c1: m.s.c, r2: m.e.r, c2: m.e.c
+    }));
+    const colWidths = (ws['!cols'] || []).map(c => c && c.wpx ? c.wpx : 0);
+    _styleCache = { _path: templatePath, colors, fontColors, merges, colWidths, rows: ROWS, cols: COLS };
+    return _styleCache;
+  } catch (e) {
+    return { colors: [], fontColors: [], merges: [], colWidths: [], rows: 0, cols: 0 };
+  }
+}
 function buildGrid(data) {
   const ROWS = Math.max(M.BANK.lastRow, M.PANEL_FIRST_ROW + 60, M.BANK_EXP.lastRow) + 2;
   const COLS = Math.max(...M.PANELS.map(p => p.col + 3), 14) + 1;
@@ -252,4 +294,4 @@ function buildGrid(data) {
   return { grid, cols: COLS, rows: ROWS };
 }
 
-module.exports = { writeWorkbook, buildDataForDate, buildGrid };
+module.exports = { writeWorkbook, buildDataForDate, buildGrid, loadTemplateStyles };

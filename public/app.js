@@ -259,21 +259,55 @@
     try {
       const r = await api('/api/sheet/grid?date=' + encodeURIComponent(d));
       const g = r.grid || [];
+      const colors = r.colors || [];
+      const fontColors = r.fontColors || [];
+      const merges = r.merges || [];
       const COL_LETTERS = (n) => { let s=''; while (n>=0){ s=String.fromCharCode(65+(n%26))+s; n=Math.floor(n/26)-1; } return s; };
-      // Find last non-empty row and column to trim display
+      // Find last non-empty row and column to trim display, but extend
+      // through any styled (colored) area so the template look-and-feel
+      // is preserved even where data is missing.
       let lastR = 0, lastC = 0;
       g.forEach((row, ri) => row.forEach((v, ci) => { if (v !== '' && v != null) { if (ri > lastR) lastR = ri; if (ci > lastC) lastC = ci; } }));
-      lastR = Math.max(lastR, 55); lastC = Math.max(lastC, 14);
+      colors.forEach((row, ri) => row.forEach((c, ci) => { if (c) { if (ri > lastR) lastR = ri; if (ci > lastC) lastC = ci; } }));
+      lastR = Math.max(lastR, 55); lastC = Math.max(lastC, 18);
+      // Merge map: any cell hidden by a merge anchor gets skipped
+      const skip = new Set();
+      const span = {}; // 'r,c' -> {rs, cs}
+      merges.forEach(m => {
+        span[`${m.r1},${m.c1}`] = { rs: m.r2 - m.r1 + 1, cs: m.c2 - m.c1 + 1 };
+        for (let rr = m.r1; rr <= m.r2; rr++) for (let cc = m.c1; cc <= m.c2; cc++) {
+          if (rr === m.r1 && cc === m.c1) continue;
+          skip.add(`${rr},${cc}`);
+        }
+      });
       let html = '<table class="live"><thead><tr><th class="rowh"></th>';
       for (let c = 0; c <= lastC; c++) html += `<th>${COL_LETTERS(c)}</th>`;
       html += '</tr></thead><tbody>';
       for (let ri = 0; ri <= lastR; ri++) {
         html += `<tr><th class="rowh">${ri+1}</th>`;
         for (let c = 0; c <= lastC; c++) {
+          if (skip.has(`${ri},${c}`)) continue;
           const v = g[ri] ? g[ri][c] : '';
+          const bg = (colors[ri] && colors[ri][c]) || '';
+          const fc = (fontColors[ri] && fontColors[ri][c]) || '';
           const cls = (typeof v === 'number') ? 'num' : '';
           const disp = (typeof v === 'number') ? v.toLocaleString('en-IN') : (v == null ? '' : String(v));
-          html += `<td class="${cls}">${esc(disp)}</td>`;
+          const sp = span[`${ri},${c}`];
+          const attrs = [];
+          if (sp && sp.rs > 1) attrs.push(`rowspan="${sp.rs}"`);
+          if (sp && sp.cs > 1) attrs.push(`colspan="${sp.cs}"`);
+          const styles = [];
+          if (bg) styles.push(`background:${bg}`);
+          if (fc) styles.push(`color:${fc}`);
+          // Auto-pick black/white text for readability against bg
+          if (bg && !fc) {
+            const hex = bg.slice(1);
+            const r2 = parseInt(hex.slice(0,2),16), gg = parseInt(hex.slice(2,4),16), bb = parseInt(hex.slice(4,6),16);
+            const lum = (0.299*r2 + 0.587*gg + 0.114*bb);
+            styles.push(`color:${lum > 140 ? '#000' : '#fff'}`);
+          }
+          const styleAttr = styles.length ? ` style="${styles.join(';')}"` : '';
+          html += `<td class="${cls}"${attrs.length?' '+attrs.join(' '):''}${styleAttr}>${esc(disp)}</td>`;
         }
         html += '</tr>';
       }
@@ -546,8 +580,29 @@
     $('#bt-bank').innerHTML = bopts;
     $('#gp-bank').innerHTML = bopts;
     const bsBank = $('#bs-bank');
-    if (bsBank) bsBank.innerHTML = '<option value="">— select which bank this statement is for —</option>' +
-      banks.rows.map(b => `<option value="${b.id}">${esc(b.name)} ${b.holder ? '(' + esc(b.holder) + ')' : ''}</option>`).join('');
+    if (bsBank) {
+      // User's banks first, then full Indian-banks registry as a separate optgroup
+      let html = '<option value="">— select which bank this statement is for —</option>';
+      if (banks.rows.length) {
+        html += '<optgroup label="Your banks">';
+        html += banks.rows.map(b => `<option value="${b.id}">${esc(b.name)} ${b.holder ? '· ' + esc(b.holder) : ''}</option>`).join('');
+        html += '</optgroup>';
+      }
+      try {
+        const reg = await api('/api/banks/registry');
+        const haveCodes = new Set((banks.rows || []).map(b => (b.name || '').toUpperCase().split(/\s+/)[0]));
+        const remaining = (reg.registry || []).filter(b => !haveCodes.has(b.code));
+        const byCat = {};
+        remaining.forEach(b => { (byCat[b.category] = byCat[b.category] || []).push(b); });
+        const labels = { psu: 'Public-sector', private: 'Private', sfb: 'Small Finance', payments: 'Payments', foreign: 'Foreign', coop: 'Co-operative' };
+        Object.entries(byCat).forEach(([cat, list]) => {
+          html += `<optgroup label="${labels[cat] || cat} (auto-add)">`;
+          html += list.map(b => `<option value="reg:${esc(b.code)}">${esc(b.code)}</option>`).join('');
+          html += '</optgroup>';
+        });
+      } catch {}
+      bsBank.innerHTML = html;
+    }
     $('#dw-panel').innerHTML = popts;
     $('#gp-panel').innerHTML = popts;
   }
@@ -738,7 +793,17 @@
       if (dynExtra._bankFromDropdown) {
         const v = $(dynExtra._bankFromDropdown) && $(dynExtra._bankFromDropdown).value;
         if (!v) return toast('Pick a bank in the dropdown first', true);
-        dynExtra.bank_id = Number(v);
+        // Registry-only entries: auto-create the bank row, then use its id
+        if (String(v).startsWith('reg:')) {
+          const code = String(v).slice(4);
+          try {
+            const created = await api('/api/banks', { method: 'POST', body: { name: code, holder: '', acno: '' } });
+            dynExtra.bank_id = created.id;
+            await loadDropdowns();
+          } catch (err) { return toast('Could not auto-add bank: ' + err.message, true); }
+        } else {
+          dynExtra.bank_id = Number(v);
+        }
         delete dynExtra._bankFromDropdown;
       }
       try {

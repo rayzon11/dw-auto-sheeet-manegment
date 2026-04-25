@@ -17,6 +17,21 @@ function resolveDate(body) {
 router.get('/banks', (req, res) => {
   res.json({ ok: true, rows: db.prepare('SELECT * FROM banks ORDER BY id').all() });
 });
+
+// All-Indian-banks registry — full A-to-Z list for the upload dropdown.
+// Lets the operator pick ANY bank (PSU, private, SFB, payments, foreign,
+// co-op) even if it's not yet in the user's banks table — on commit, an
+// unregistered code triggers an auto-register.
+router.get('/banks/registry', (req, res) => {
+  try {
+    const { ALL_BANKS } = require('../parsers/banksRegistry');
+    const list = ALL_BANKS.map(([code, , category]) => ({ code, category }));
+    const userBanks = db.prepare('SELECT id, name, holder, acno FROM banks ORDER BY name').all();
+    res.json({ ok: true, registry: list, banks: userBanks });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
 router.post('/banks', (req, res) => {
   const { name, holder, acno, open_balance } = req.body || {};
   if (!name) return res.status(400).json({ ok: false, error: 'name required' });

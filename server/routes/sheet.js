@@ -11,7 +11,7 @@ const path = require('path');
 const { db, audit } = require('../lib/db');
 const A = require('../lib/auth');
 const { currentBusinessDate } = require('../lib/businessDate');
-const { writeWorkbook, buildDataForDate, buildGrid } = require('../lib/xlsxWriter');
+const { writeWorkbook, buildDataForDate, buildGrid, loadTemplateStyles } = require('../lib/xlsxWriter');
 
 const router = express.Router();
 const TEMPLATE_DIR = path.join(__dirname, '..', '..', 'data', 'templates');
@@ -169,7 +169,13 @@ router.get('/grid', A.requireAuth, (req, res) => {
   try {
     const data = buildDataForDate(db, date);
     const g = buildGrid(data);
-    res.json({ ok: true, business_date: date, grid: g.grid, rows: g.rows, cols: g.cols, generated_at: new Date().toISOString() });
+    const tpl = getTemplatePath();
+    const styles = tpl ? loadTemplateStyles(tpl) : { colors: [], fontColors: [], merges: [], colWidths: [] };
+    res.json({ ok: true, business_date: date,
+      grid: g.grid, rows: g.rows, cols: g.cols,
+      colors: styles.colors, fontColors: styles.fontColors,
+      merges: styles.merges, colWidths: styles.colWidths,
+      generated_at: new Date().toISOString() });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
