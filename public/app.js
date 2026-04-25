@@ -675,8 +675,13 @@
       if (det.auto_registered) { try { await loadDropdowns(); } catch {} }
       const banner = `<div class="mute" style="margin:6px 0;font-size:12px;${det.bank_id?'color:#7cffa2':'color:#ffc166'}">${label}</div>`;
       $('#bsPreview').innerHTML = banner;
-      if (!bankId) return toast('no bank detected — pick one in the dropdown, then re-preview', true);
-      renderPreview('#bsPreview', r.rows, 'bank-statement', ['date','narration','amt','type','category','name','utr','entryKind','business_date','duplicate'], { bank_id: Number(bankId) }, banner);
+      if (!r.rows || !r.rows.length) {
+        $('#bsPreview').innerHTML = banner + '<div class="mute" style="margin-top:10px">No rows parsed from this PDF.</div>';
+        return toast('No rows parsed — is this a supported bank statement PDF?', true);
+      }
+      if (!bankId) toast('Pick a bank from the dropdown before committing', true);
+      // bank_id is read dynamically at commit time so user can pick after preview
+      renderPreview('#bsPreview', r.rows, 'bank-statement', ['date','narration','amt','type','category','name','utr','entryKind','business_date','duplicate'], { _bankFromDropdown: '#bs-bank' }, banner);
     } catch (e) { toast(e.message, true); }
   });
 
@@ -714,8 +719,16 @@
     $(sel + ' #commitBtn').addEventListener('click', async () => {
       const picks = new Set([...$$(sel + ' .rowchk')].filter(c => c.checked).map(c => +c.dataset.i));
       const payload = rows.map((r, i) => picks.has(i) ? r : { ...r, skip: true });
+      // Resolve dynamic bank_id from a dropdown if requested
+      const dynExtra = { ...extra };
+      if (dynExtra._bankFromDropdown) {
+        const v = $(dynExtra._bankFromDropdown) && $(dynExtra._bankFromDropdown).value;
+        if (!v) return toast('Pick a bank in the dropdown first', true);
+        dynExtra.bank_id = Number(v);
+        delete dynExtra._bankFromDropdown;
+      }
       try {
-        const res = await api('/api/ingest/commit/' + kind, { method: 'POST', body: { rows: payload, ...extra } });
+        const res = await api('/api/ingest/commit/' + kind, { method: 'POST', body: { rows: payload, ...dynExtra } });
         toast(`Inserted ${res.insertedBank || res.inserted || 0} + ${res.insertedDw || 0}, skipped ${res.skipped || 0}`);
         $(sel).innerHTML = '';
         loadHisab();
