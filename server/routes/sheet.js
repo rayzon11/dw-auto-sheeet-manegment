@@ -11,7 +11,7 @@ const path = require('path');
 const { db, audit } = require('../lib/db');
 const A = require('../lib/auth');
 const { currentBusinessDate } = require('../lib/businessDate');
-const { writeWorkbook, buildDataForDate, buildGrid, loadTemplateStyles } = require('../lib/xlsxWriter');
+const { writeWorkbook, buildDataForDate, buildGrid, loadTemplateStyles, renderTemplateAsHtml } = require('../lib/xlsxWriter');
 
 const router = express.Router();
 const TEMPLATE_DIR = path.join(__dirname, '..', '..', 'data', 'templates');
@@ -224,6 +224,42 @@ router.get('/google/status', A.requireAuth, (req, res) => {
     url: process.env.GOOGLE_SHEET_ID
       ? `https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_SHEET_ID}` : null,
   });
+});
+
+// Render the master template as a styled HTML table for the Live Sheet.
+// 1:1 visual of the .xlsx (colors, merges, fonts) + computed live data
+// + manual overrides. Returns { html } the frontend drops into #liveGrid.
+router.get('/html', A.requireAuth, (req, res) => {
+  const date = req.query.date || currentBusinessDate();
+  const editable = req.query.editable !== '0';
+  const tpl = getTemplatePath();
+  if (!tpl || !fs.existsSync(tpl)) return res.status(400).json({ ok: false, error: 'no template uploaded' });
+  try {
+    const data = buildDataForDate(db, date);
+    const g = buildGrid(data);
+    // Pack live values into a {"r,c": value} map for the renderer.
+    // Only inject NUMERIC values (computed totals) — string header labels
+    // are already in the template; we don't want to overwrite the template's
+    // own headings like "B2C BANK BALANCE DETAILS" with "Sr".
+    const liveValues = {};
+    for (let r = 0; r < g.grid.length; r++) {
+      for (let c = 0; c < g.grid[r].length; c++) {
+        const v = g.grid[r][c];
+        if (typeof v === 'number' && v !== 0) liveValues[`${r},${c}`] = v;
+        // Strings only when they are dynamic data (bank name, holder, panel name) — these
+        // are written by buildGrid into rows >= BANK.firstRow (row index 3) and panel
+        // summary rows. Skip header row 0 to keep template title intact.
+        else if (typeof v === 'string' && v !== '' && r > 0) liveValues[`${r},${c}`] = v;
+      }
+    }
+    const ovs = db.prepare('SELECT row, col, value FROM sheet_overrides WHERE business_date = ?').all(date);
+    const overrides = {};
+    for (const o of ovs) overrides[`${o.row},${o.col}`] = o.value;
+    const html = renderTemplateAsHtml(tpl, { liveValues, overrides, editable });
+    res.json({ ok: true, business_date: date, html, generated_at: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
 });
 
 // Manual cell write — used by the Live Sheet contenteditable cells.

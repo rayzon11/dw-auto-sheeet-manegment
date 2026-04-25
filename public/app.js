@@ -256,6 +256,36 @@
     $('#liveIframe').style.display = 'none';
     const d = $('#live-date').value || BD;
     if (!silent) $('#liveStatus').textContent = 'Loading…';
+    // ── New: render the actual xlsx template as styled HTML (ditto layout)
+    try {
+      const r = await api('/api/sheet/html?date=' + encodeURIComponent(d));
+      $('#liveGrid').innerHTML = '<div class="sheet-html-wrap">' + r.html + '</div>';
+      $('#liveStatus').textContent = 'Last updated ' + new Date().toLocaleTimeString() + ' · click any cell to edit';
+      // Wire contenteditable blur → POST manual override
+      $$('#liveGrid td[contenteditable]').forEach(td => {
+        const orig = td.textContent;
+        td._orig = orig;
+        td.addEventListener('blur', async () => {
+          const newVal = td.textContent.trim();
+          if (newVal === td._orig) return;
+          const r2 = +td.dataset.r, c2 = +td.dataset.c;
+          try {
+            await api('/api/sheet/cell', { method: 'POST', body: { date: d, row: r2, col: c2, value: newVal } });
+            td._orig = newVal;
+            td.style.outline = '2px solid #29d08c';
+            setTimeout(() => { td.style.outline = ''; }, 800);
+          } catch (e) { toast('Save failed: ' + e.message, true); td.textContent = orig; }
+        });
+        td.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); td.blur(); }
+          if (e.key === 'Escape') { td.textContent = td._orig; td.blur(); }
+        });
+      });
+      return;
+    } catch (e) {
+      console.warn('html render failed, falling back:', e.message);
+    }
+    // Fallback: legacy 2D grid renderer
     try {
       const r = await api('/api/sheet/grid?date=' + encodeURIComponent(d));
       const g = r.grid || [];

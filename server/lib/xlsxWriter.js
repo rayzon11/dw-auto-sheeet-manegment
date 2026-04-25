@@ -312,4 +312,99 @@ function buildGrid(data) {
   return { grid, cols: COLS, rows: ROWS };
 }
 
-module.exports = { writeWorkbook, buildDataForDate, buildGrid, loadTemplateStyles };
+// Render the master template as a styled HTML <table> for the Live Sheet.
+// Uses SheetJS's sheet_to_html for the exact structure (colspan/rowspan,
+// cell values, IDs), then injects background-color + font-color + bold
+// per cell from the workbook's cellStyles. Result: a 1:1 visual of the
+// original .xlsx, ready to drop into the page.
+//
+// Optional overlays:
+//   liveValues — Map of "r,c" -> computed live value (overwrites template)
+//   overrides  — Map of "r,c" -> manual override (overwrites both)
+//   editable   — if true, every cell gets contenteditable="true" + data-r/data-c
+function renderTemplateAsHtml(templatePath, opts = {}) {
+  const wb = XLSX.readFile(templatePath, { cellStyles: true });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+
+  // Apply live values & overrides into cell `.v` so sheet_to_html prints them
+  const liveValues = opts.liveValues || {};
+  const overrides  = opts.overrides  || {};
+  for (const key of Object.keys(liveValues)) {
+    const [r, c] = key.split(',').map(Number);
+    const a = XLSX.utils.encode_cell({ r, c });
+    const cell = ws[a] || (ws[a] = { t: 's' });
+    const v = liveValues[key];
+    if (typeof v === 'number') { cell.t = 'n'; cell.v = v; }
+    else if (v !== '' && v != null) { cell.t = 's'; cell.v = v; }
+  }
+  for (const key of Object.keys(overrides)) {
+    const [r, c] = key.split(',').map(Number);
+    const a = XLSX.utils.encode_cell({ r, c });
+    const cell = ws[a] || (ws[a] = { t: 's' });
+    const v = overrides[key];
+    const num = Number(v);
+    if (v !== '' && /^-?\d+(\.\d+)?$/.test(String(v))) { cell.t = 'n'; cell.v = num; }
+    else if (v != null) { cell.t = 's'; cell.v = String(v); }
+  }
+
+  // Trim to content extent so the HTML isn't 23 MB of empties
+  let lastR = 0, lastC = 0;
+  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+  const HARD_R = Math.min(range.e.r, 250), HARD_C = Math.min(range.e.c, 80);
+  for (let r = 0; r <= HARD_R; r++) {
+    for (let c = 0; c <= HARD_C; c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r, c })];
+      if (cell && (cell.v != null || (cell.s && cell.s.patternType === 'solid'))) {
+        if (r > lastR) lastR = r;
+        if (c > lastC) lastC = c;
+      }
+    }
+  }
+  const orig_ref = ws['!ref'];
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: lastR, c: lastC } });
+
+  const html = XLSX.utils.sheet_to_html(ws, { editable: false });
+  ws['!ref'] = orig_ref;
+
+  // Replace each <td …> with a clean version: strip data-t/data-v/data-z
+  // (we don't need them client-side), keep colspan/rowspan, add bg/font
+  // styling from cell.s, plus contenteditable + data-r/data-c.
+  const styled = html.replace(/<td([^>]*)>/g, (full, attrs) => {
+    const idM = attrs.match(/id="sjs-([A-Z]+)(\d+)"/);
+    if (!idM) return full;
+    const colLetters = idM[1], rowNum = idM[2];
+    const r = parseInt(rowNum, 10) - 1;
+    let c = 0; for (const ch of colLetters) c = c * 26 + (ch.charCodeAt(0) - 64); c -= 1;
+    const cell = ws[XLSX.utils.encode_cell({ r, c })];
+    const styles = [];
+    if (cell && cell.s) {
+      const fg = cell.s.fgColor;
+      if (fg && fg.rgb && cell.s.patternType === 'solid') {
+        const hex = fg.rgb.length >= 8 ? fg.rgb.slice(2) : fg.rgb.padStart(6, '0');
+        if (hex !== 'FFFFFF' && hex !== '000000') {
+          styles.push(`background:#${hex}`);
+          const r2 = parseInt(hex.slice(0,2),16), gg = parseInt(hex.slice(2,4),16), bb = parseInt(hex.slice(4,6),16);
+          const lum = 0.299*r2 + 0.587*gg + 0.114*bb;
+          styles.push(`color:${lum > 140 ? '#000' : '#fff'}`);
+        }
+      }
+      const ft = cell.s.color;
+      if (ft && ft.rgb) {
+        const hex = ft.rgb.length >= 8 ? ft.rgb.slice(2) : ft.rgb.padStart(6, '0');
+        styles.push(`color:#${hex}`);
+      }
+      if (cell.s.bold || (cell.s.font && cell.s.font.bold)) styles.push('font-weight:600');
+    }
+    // Keep only colspan/rowspan from original attrs
+    const keep = (attrs.match(/colspan="\d+"/) || [''])[0] + ' ' + (attrs.match(/rowspan="\d+"/) || [''])[0];
+    const editAttr = opts.editable ? ' contenteditable="true"' : '';
+    const styleAttr = styles.length ? ` style="${styles.join(';')}"` : '';
+    return `<td ${keep.trim()} data-r="${r}" data-c="${c}"${editAttr}${styleAttr}>`;
+  });
+
+  // Strip the <html><head>… wrapper — we only want the <table>.
+  const tableMatch = styled.match(/<table[\s\S]*<\/table>/);
+  return tableMatch ? tableMatch[0] : styled;
+}
+
+module.exports = { writeWorkbook, buildDataForDate, buildGrid, loadTemplateStyles, renderTemplateAsHtml };

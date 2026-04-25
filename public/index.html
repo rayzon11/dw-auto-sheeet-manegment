@@ -50,6 +50,12 @@
   table.live thead th { position:sticky; top:0; background:#0f1d36; color:#00d4ff; z-index:2; }
   table.live td[contenteditable]:focus { outline:2px solid #00d4ff; background:#0d2845 !important; color:#fff !important; cursor:text; }
   table.live td[contenteditable]:hover { cursor:cell; }
+  /* SheetJS-rendered template — styled to match the original xlsx 1:1 */
+  .sheet-html-wrap { background:#fff; color:#000; font-family:'Calibri','Segoe UI',Arial,sans-serif; font-size:12px; padding:6px; border-radius:4px; overflow:auto; }
+  .sheet-html-wrap table { border-collapse:collapse; }
+  .sheet-html-wrap td { border:1px solid #b7c5d3; padding:4px 8px; min-width:60px; max-width:240px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; vertical-align:middle; }
+  .sheet-html-wrap td[contenteditable]:hover { cursor:cell; outline:1px dashed #00d4ff; }
+  .sheet-html-wrap td[contenteditable]:focus { outline:2px solid #00d4ff; background:#fff8c0 !important; cursor:text; }
   table.live th.rowh { position:sticky; left:0; background:#0f1d36; color:#7a8aa0; text-align:right; z-index:3; min-width:34px; }
   table.live td.num { text-align:right; color:#9ee6ff; }
   .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:100; }
@@ -407,6 +413,6 @@
 
 <div id="toast"></div>
 
-<script src="/app.js?v=20260425f"></script>
+<script src="/app.js?v=20260425g"></script>
 </body>
 </html>
