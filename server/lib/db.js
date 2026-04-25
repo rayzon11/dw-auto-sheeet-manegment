@@ -152,6 +152,20 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- Manual cell overrides on the live sheet — lets the user type into any
+-- cell in the Live Sheet and have it stick. (row,col) are 0-indexed grid
+-- coordinates; business_date scopes the override to a specific day's sheet.
+CREATE TABLE IF NOT EXISTS sheet_overrides (
+  business_date TEXT NOT NULL,
+  row INTEGER NOT NULL,
+  col INTEGER NOT NULL,
+  value TEXT,
+  updated_by INTEGER,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (business_date, row, col)
+);
+CREATE INDEX IF NOT EXISTS idx_sheet_overrides_date ON sheet_overrides(business_date);
 `);
 
 // ── Idempotent column migrations (for DBs created before a column existed)

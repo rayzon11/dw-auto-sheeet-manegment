@@ -171,10 +171,21 @@ router.get('/grid', A.requireAuth, (req, res) => {
     const g = buildGrid(data);
     const tpl = getTemplatePath();
     const styles = tpl ? loadTemplateStyles(tpl) : { colors: [], fontColors: [], merges: [], colWidths: [] };
+    // Layer manual overrides on top of computed cells
+    const ovs = db.prepare('SELECT row, col, value FROM sheet_overrides WHERE business_date = ?').all(date);
+    const overrides = {};
+    for (const o of ovs) {
+      overrides[`${o.row},${o.col}`] = o.value;
+      if (g.grid[o.row]) {
+        const num = Number(o.value);
+        g.grid[o.row][o.col] = (o.value !== '' && !isNaN(num) && /^-?\d+(\.\d+)?$/.test(String(o.value))) ? num : o.value;
+      }
+    }
     res.json({ ok: true, business_date: date,
       grid: g.grid, rows: g.rows, cols: g.cols,
       colors: styles.colors, fontColors: styles.fontColors,
       merges: styles.merges, colWidths: styles.colWidths,
+      overrides,
       generated_at: new Date().toISOString() });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
@@ -190,6 +201,26 @@ router.get('/google/status', A.requireAuth, (req, res) => {
     url: process.env.GOOGLE_SHEET_ID
       ? `https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_SHEET_ID}` : null,
   });
+});
+
+// Manual cell write — used by the Live Sheet contenteditable cells.
+// Body: { date, row, col, value }   (value '' or null clears the override)
+router.post('/cell', A.requireAuth, (req, res) => {
+  const { date, row, col, value } = req.body || {};
+  if (!date || !Number.isInteger(row) || !Number.isInteger(col)) {
+    return res.status(400).json({ ok: false, error: 'date, row, col required' });
+  }
+  if (value === '' || value === null || value === undefined) {
+    db.prepare('DELETE FROM sheet_overrides WHERE business_date=? AND row=? AND col=?').run(date, row, col);
+  } else {
+    db.prepare(`INSERT INTO sheet_overrides(business_date,row,col,value,updated_by,updated_at)
+                VALUES (?,?,?,?,?,datetime('now'))
+                ON CONFLICT(business_date,row,col) DO UPDATE SET
+                  value=excluded.value, updated_by=excluded.updated_by, updated_at=excluded.updated_at`)
+      .run(date, row, col, String(value), req.user.id);
+  }
+  audit(req.user.id, 'cell_write', 'sheet', null, { date, row, col, value });
+  res.json({ ok: true });
 });
 
 module.exports = router;

@@ -307,13 +307,35 @@
             styles.push(`color:${lum > 140 ? '#000' : '#fff'}`);
           }
           const styleAttr = styles.length ? ` style="${styles.join(';')}"` : '';
-          html += `<td class="${cls}"${attrs.length?' '+attrs.join(' '):''}${styleAttr}>${esc(disp)}</td>`;
+          // Editable cells: mark with data-r/data-c so we can persist edits
+          const editAttr = ` contenteditable="true" data-r="${ri}" data-c="${c}"`;
+          html += `<td class="${cls}"${attrs.length?' '+attrs.join(' '):''}${styleAttr}${editAttr}>${esc(disp)}</td>`;
         }
         html += '</tr>';
       }
       html += '</tbody></table>';
       $('#liveGrid').innerHTML = html;
-      $('#liveStatus').textContent = 'Last updated ' + new Date().toLocaleTimeString();
+      $('#liveStatus').textContent = 'Last updated ' + new Date().toLocaleTimeString() + ' · click any cell to edit';
+      // Wire contenteditable blur → POST manual override
+      $$('#liveGrid td[contenteditable]').forEach(td => {
+        const orig = td.textContent;
+        td._orig = orig;
+        td.addEventListener('blur', async () => {
+          const newVal = td.textContent.trim();
+          if (newVal === td._orig) return;
+          const r2 = +td.dataset.r, c2 = +td.dataset.c;
+          try {
+            await api('/api/sheet/cell', { method: 'POST', body: { date: d, row: r2, col: c2, value: newVal } });
+            td._orig = newVal;
+            td.style.outline = '2px solid #29d08c';
+            setTimeout(() => { td.style.outline = ''; }, 800);
+          } catch (e) { toast('Save failed: ' + e.message, true); td.textContent = orig; }
+        });
+        td.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); td.blur(); }
+          if (e.key === 'Escape') { td.textContent = td._orig; td.blur(); }
+        });
+      });
     } catch (e) { $('#liveStatus').textContent = 'Error: ' + e.message; }
   }
 

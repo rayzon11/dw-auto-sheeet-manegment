@@ -48,6 +48,8 @@
   table.live { border-collapse:collapse; font-size:11px; font-family:monospace; background:#0a1424; }
   table.live th, table.live td { border:1px solid #1c2a44; padding:3px 6px; min-width:64px; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   table.live thead th { position:sticky; top:0; background:#0f1d36; color:#00d4ff; z-index:2; }
+  table.live td[contenteditable]:focus { outline:2px solid #00d4ff; background:#0d2845 !important; color:#fff !important; cursor:text; }
+  table.live td[contenteditable]:hover { cursor:cell; }
   table.live th.rowh { position:sticky; left:0; background:#0f1d36; color:#7a8aa0; text-align:right; z-index:3; min-width:34px; }
   table.live td.num { text-align:right; color:#9ee6ff; }
   .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:100; }
@@ -405,6 +407,6 @@
 
 <div id="toast"></div>
 
-<script src="/app.js?v=20260425d"></script>
+<script src="/app.js?v=20260425e"></script>
 </body>
 </html>
