@@ -657,8 +657,11 @@
   $('#bsPreviewBtn').addEventListener('click', async () => {
     const f = $('#bsFile').files[0];
     if (!f) return toast('pick a PDF', true);
+    $('#bsPreview').innerHTML = '<div class="mute" style="margin:10px 0">Parsing PDF — may take a few seconds for large statements…</div>';
     try {
+      console.log('[preview] uploading', f.name, f.size, 'bytes');
       const r = await apiUpload('/api/ingest/preview/bank-statement', f);
+      console.log('[preview] response', r);
       const det = r.detected || {};
       let bankId = det.bank_id || null;
       // Auto-fill the dropdown if present
@@ -684,16 +687,25 @@
       if (!bankId) toast('Pick a bank from the dropdown before committing', true);
       // bank_id is read dynamically at commit time so user can pick after preview
       renderPreview('#bsPreview', r.rows, 'bank-statement', ['date','narration','amt','type','category','name','utr','entryKind','business_date','duplicate'], { _bankFromDropdown: '#bs-bank' }, banner);
-    } catch (e) { toast(e.message, true); }
+    } catch (e) {
+      console.error('[preview] failed', e);
+      $('#bsPreview').innerHTML = `<div class="pill err" style="display:block;padding:10px;margin-top:10px">Preview failed: ${esc(e.message)}</div>`;
+      toast(e.message, true);
+    }
   });
 
   $('#gpPreviewBtn').addEventListener('click', async () => {
     const f = $('#gpFile').files[0];
     if (!f) return toast('pick a file', true);
+    $('#gpPreview').innerHTML = '<div class="mute" style="margin:10px 0">Parsing…</div>';
     try {
       const r = await apiUpload('/api/ingest/preview/gpay-statement', f);
       renderPreview('#gpPreview', r.rows, 'gpay-statement', ['ts','type','amt','name','utr','business_date','duplicate']);
-    } catch (e) { toast(e.message, true); }
+    } catch (e) {
+      console.error('[gpay preview] failed', e);
+      $('#gpPreview').innerHTML = `<div class="pill err" style="display:block;padding:10px;margin-top:10px">Preview failed: ${esc(e.message)}</div>`;
+      toast(e.message, true);
+    }
   });
 
   function renderPreview(sel, rows, kind, cols, extra = {}, prefix = '') {
