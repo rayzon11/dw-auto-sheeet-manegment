@@ -36,9 +36,41 @@ async function runRollover(reason = 'scheduled') {
     }
   } catch (e) { info.archive_error = String(e.message || e); }
 
+  // ── Bank opening-balance carry-forward ──────────────────────────────
+  // Today's opening balance = yesterday's closing balance (= yesterday's
+  // open_balance + all non-charge credits − all non-charge debits).
+  // After rollover, today's sheet shows 0s for everything except bank
+  // opening + closing balances (closing == opening until first txn arrives).
+  try {
+    const banks = db.prepare('SELECT id, open_balance FROM banks').all();
+    const carry = db.transaction(() => {
+      const upd = db.prepare('UPDATE banks SET open_balance = ? WHERE id = ?');
+      const sumQ = db.prepare(`
+        SELECT type, COALESCE(SUM(amt),0) AS total FROM bank_txns
+        WHERE bank_id = ? AND business_date = ?
+          AND (category IS NULL OR category != 'charge')
+        GROUP BY type
+      `);
+      let updated = 0;
+      for (const b of banks) {
+        const rows = sumQ.all(b.id, closedDate);
+        let credit = 0, debit = 0;
+        for (const r of rows) (r.type === 'credit' ? credit = r.total : debit = r.total);
+        const closing = Number(b.open_balance || 0) + credit - debit;
+        upd.run(closing, b.id);
+        updated++;
+      }
+      return updated;
+    });
+    info.banks_carried = carry();
+  } catch (e) { info.carry_error = String(e.message || e); }
+
   // Best-effort push to Google Sheets for the closed date
   try {
-    if (process.env.GOOGLE_SHEET_ID && process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    const cfg = (() => { try { return require('./googleSheetWriter').loadGoogleConfig?.() || {}; } catch (_) { return {}; } })();
+    const haveCfg = (process.env.GOOGLE_SHEET_ID || cfg.sheetId)
+                  && (process.env.GOOGLE_SERVICE_ACCOUNT_JSON || cfg.saJson);
+    if (haveCfg) {
       const { pushToGoogleSheet } = require('./googleSheetWriter');
       const gs = await pushToGoogleSheet(db, closedDate);
       info.google = gs;

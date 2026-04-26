@@ -148,4 +148,26 @@ async function pushToGoogleSheet(db, business_date) {
   };
 }
 
-module.exports = { pushToGoogleSheet, buildBatch, a1, rangeA1 };
+// Debounced live sync: fire-and-forget. Coalesces bursts of mutations
+// (e.g. bulk imports) into one push per ~3 seconds per business_date.
+const _pending = new Map(); // date -> timer
+function scheduleLiveSync(business_date) {
+  try {
+    const cfg = loadGoogleConfig();
+    if (!cfg.sheetId || !cfg.saJson) return; // not configured — skip silently
+    if (_pending.has(business_date)) return;
+    const t = setTimeout(async () => {
+      _pending.delete(business_date);
+      try {
+        const { db } = require('./db');
+        const r = await pushToGoogleSheet(db, business_date);
+        console.log('[gsync]', business_date, r);
+      } catch (e) {
+        console.error('[gsync] error', business_date, e.message);
+      }
+    }, 3000);
+    _pending.set(business_date, t);
+  } catch (_) {}
+}
+
+module.exports = { pushToGoogleSheet, buildBatch, a1, rangeA1, loadGoogleConfig, scheduleLiveSync };

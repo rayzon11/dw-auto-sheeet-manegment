@@ -125,6 +125,24 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, business_date: currentBusinessDate(), time: new Date().toISOString() });
 });
 
+// Live Google Sheets sync — fires after any mutation under /api (except auth/health).
+// Debounced inside scheduleLiveSync so bulk imports don't spam the API.
+app.use('/api', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  if (req.path.startsWith('/auth') || req.path.startsWith('/health')) return next();
+  res.on('finish', () => {
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      try {
+        const { scheduleLiveSync } = require('./lib/googleSheetWriter');
+        const date = (req.body && (req.body.business_date || (req.body.ts && require('./lib/businessDate').businessDate(req.body.ts))))
+                  || require('./lib/businessDate').currentBusinessDate();
+        scheduleLiveSync(date);
+      } catch (_) {}
+    }
+  });
+  next();
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/ingest', ingestRoutes);
 app.use('/api/sheet', sheetRoutes);
