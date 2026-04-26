@@ -9,7 +9,7 @@
     "seed": "node server/seed.js"
   },
   "engines": {
-    "node": ">=22.5"
+    "node": ">=24"
   },
   "dependencies": {
     "archiver": "^7.0.1",
