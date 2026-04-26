@@ -3,9 +3,9 @@
   "buildCommand": false,
   "outputDirectory": "public",
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "https://REPLACE-WITH-RAILWAY-URL.up.railway.app/api/$1" },
-    { "source": "/extension.zip", "destination": "https://REPLACE-WITH-RAILWAY-URL.up.railway.app/extension.zip" },
-    { "source": "/android-source.zip", "destination": "https://REPLACE-WITH-RAILWAY-URL.up.railway.app/android-source.zip" },
-    { "source": "/android-debug.apk", "destination": "https://REPLACE-WITH-RAILWAY-URL.up.railway.app/android-debug.apk" }
+    { "source": "/api/(.*)", "destination": "https://web-production-d8db.up.railway.app/api/$1" },
+    { "source": "/extension.zip", "destination": "https://web-production-d8db.up.railway.app/extension.zip" },
+    { "source": "/android-source.zip", "destination": "https://web-production-d8db.up.railway.app/android-source.zip" },
+    { "source": "/android-debug.apk", "destination": "https://web-production-d8db.up.railway.app/android-debug.apk" }
   ]
 }
