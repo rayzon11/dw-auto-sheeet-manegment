@@ -138,13 +138,19 @@ router.post('/panel', A.requireAuthOrToken, (req, res) => {
   let inserted = 0, skipped = 0;
   const tx = db.transaction((items, type) => {
     for (const e of items) {
-      const ts = e.ts || e.date || null;
-      const bd = ts ? businessDate(ts + 'T12:00:00+05:30') : currentBusinessDate();
+      // Prefer full ISO ts (date+time+TZ) sent by the extension; fall back
+      // to a date-only string. businessDate() needs an ISO with TZ to land
+      // in the right book around the 05:30 IST cutoff.
+      let tsRaw = e.ts || e.date || null;
+      let bd;
+      if (tsRaw && /T\d{2}:\d{2}/.test(tsRaw)) bd = businessDate(tsRaw);
+      else if (tsRaw) bd = businessDate(tsRaw + 'T12:00:00+05:30');
+      else bd = currentBusinessDate();
       const utr = e.utr || '';
       // Dedupe key: prefer UTR (panel-side unique). Fall back to a composite
       // (date|amount|name) keyed per slug so the same row doesn't ingest twice.
-      const extRef = utr ? `${slug}:${utr}` : `${slug}:${ts || ''}|${e.amount}|${(e.name || '').trim()}`;
-      const info = ins.run(bd, ts, slug, type, Number(e.amount) || 0, e.name || '', utr,
+      const extRef = utr ? `${slug}:${utr}` : `${slug}:${tsRaw || ''}|${e.amount}|${(e.name || '').trim()}`;
+      const info = ins.run(bd, tsRaw, slug, type, Number(e.amount) || 0, e.name || '', utr,
                            e.bank || '', 'extension', extRef, req.user.id);
       if (info.changes) inserted++; else skipped++;
     }

@@ -20,20 +20,21 @@ app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 
 function bootstrap() {
-  // Seed a default panel_map ONLY if none exists — covers the common case
-  // (Freeplay24 master MAHA0001 → first 1XBET column). Admin can edit the
-  // map from Settings → Panel Mapping later.
+  // Seed a default panel_map ONLY if none exists.
+  //
+  // ⚠ NOTE: 'freeplay24:MAHA0001 → 1XBET0001' is a TESTING-ONLY default.
+  // The MAHA0001 account on Freeplay24 is being used by the customer to dry-
+  // run the integration end-to-end. Real production panels (1XBET0001..0006)
+  // map to different real masters once go-live happens. Admin should overwrite
+  // these via Settings → Panel Mapping before going live with real data.
   try {
     const has = db.prepare("SELECT 1 FROM settings WHERE key='panel_map'").get();
     if (!has) {
       const seed = {
-        'freeplay24:MAHA0001': '1XBET0001',
-        'freeplay24:*':        '1XBET0001',
-        'testawl-admin:*':     '1XBET0002',
-        'testawl-main:*':      '1XBET0002',
+        'freeplay24:MAHA0001': '1XBET0001',  // ⚠ TESTING ONLY
       };
       db.prepare("INSERT INTO settings(key,value) VALUES('panel_map', ?)").run(JSON.stringify(seed));
-      console.log('[bootstrap] seeded default panel_map:', seed);
+      console.log('[bootstrap] seeded panel_map (TESTING ONLY):', seed);
     }
   } catch (e) { console.error('[bootstrap] panel_map seed failed', e.message); }
 

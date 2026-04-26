@@ -162,30 +162,155 @@
     return first ? [...first.children].map(c => (c.textContent||'').trim()) : [];
   }
 
-  // Detect the master/account label from the sidebar so the server knows
-  // which sheet panel this scrape belongs to (e.g. freeplay24 + MAHA0001).
-  function detectMaster() {
-    // Common patterns: a sidebar text node above the menu showing the user's
-    // master code, or the current login displayed at top-right.
+  // Detect the master/account label. Strategy hierarchy (most reliable first):
+  //  1. The MASTER column of the data table — every row carries the master,
+  //     so the most-frequent value there is definitive (won't be confused
+  //     with stray "ROUND01" / status badges / version strings).
+  //  2. The sidebar / topbar — works on the dashboard before any data loads.
+  //  3. Whole-body text fallback as last resort.
+  function detectMaster(tableData) {
+    // 1) Most-common value of a "master" column across visible rows.
+    if (tableData && tableData.length) {
+      for (const t of tableData) {
+        const idx = t.headers.findIndex(h => /^master\b/i.test(h));
+        if (idx < 0) continue;
+        const counts = {};
+        for (const row of t.rows) {
+          const v = (row[idx] || '').trim();
+          if (!v || !/^[A-Z][A-Z0-9_-]{2,}/i.test(v)) continue;
+          const k = v.toUpperCase();
+          counts[k] = (counts[k] || 0) + 1;
+        }
+        const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+        if (sorted.length) return sorted[0][0];
+      }
+    }
+    // 2) Sidebar / topbar.
     const candidates = [];
     document.querySelectorAll('aside, .sidebar, .side-bar, .navbar, .topbar, .user-info, h1, h2, h3, h4').forEach(el => {
       const txt = (el.textContent || '').trim();
       if (txt && txt.length < 60) candidates.push(txt);
     });
-    // Look for an upper-case + digits pattern like MAHA0001, or any X+digits
     for (const t of candidates) {
       const m = t.match(/\b([A-Z]{2,}\d{2,6})\b/);
       if (m) return m[1].toUpperCase();
     }
-    // Fallback: try to read the body text once for the same pattern
+    // 3) Whole-body fallback.
     const all = (document.body && document.body.innerText) ? document.body.innerText.slice(0, 4000) : '';
     const m = all.match(/\b([A-Z]{2,}\d{2,6})\b/);
     return m ? m[1].toUpperCase() : '';
   }
 
+  // ─── Pagination: pull ALL rows including hidden pages ─────────────────
+  // Strategy hierarchy:
+  //  1. If jQuery DataTables is loaded (Freeplay24 uses it), read its
+  //     internal data via the public API — gets every row across all pages
+  //     without disturbing the user's view.
+  //  2. Otherwise try to set the page-length dropdown to its maximum value
+  //     and let the next poll cycle pick up the now-larger visible set.
+  //  3. Fall back to whatever's currently visible.
+  function readDataTablesAllRows() {
+    const out = [];
+    try {
+      const $ = window.jQuery || window.$;
+      if (!$ || !$.fn || !$.fn.DataTable) return out;
+      const tables = $.fn.dataTable && $.fn.dataTable.tables ? $.fn.dataTable.tables({ visible: true, api: true }) : null;
+      const apis = tables ? tables : $('table').filter((_, t) => $.fn.DataTable.isDataTable(t)).map((_, t) => $(t).DataTable()).get();
+      const list = (tables && tables.tables) ? tables.tables(true).toArray ? tables.tables(true).toArray() : [tables] : apis;
+      for (const api of list) {
+        try {
+          const headers = [];
+          api.columns().every(function () {
+            const th = this.header();
+            headers.push((th && th.textContent || '').trim());
+          });
+          const rows = [];
+          api.rows({ search: 'applied' }).data().each(function (rowData) {
+            // rowData might be array (DOM-sourced) or object (AJAX-sourced)
+            if (Array.isArray(rowData)) {
+              rows.push(rowData.map(c => stripHtml(String(c || '')).trim()));
+            } else if (rowData && typeof rowData === 'object') {
+              rows.push(headers.map((_, i) => stripHtml(String(rowData[i] != null ? rowData[i] : '')).trim()));
+            }
+          });
+          if (rows.length) out.push({ headers, rows });
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  function stripHtml(s) {
+    if (!/<[^>]+>/.test(s)) return s;
+    const d = document.createElement('div');
+    d.innerHTML = s;
+    return (d.textContent || d.innerText || '').trim();
+  }
+
+  // Try once, on each scrape, to bump the DataTables page-length to the max
+  // so even if the API path fails, the next visible-scrape sees more rows.
+  let _bumpedLength = false;
+  function bumpDataTablesLength() {
+    if (_bumpedLength) return;
+    try {
+      const sel = document.querySelector('select[name$="_length"], select.length-dropdown, .dataTables_length select');
+      if (!sel) return;
+      const opts = [...sel.options].map(o => parseInt(o.value, 10)).filter(n => !isNaN(n));
+      if (!opts.length) return;
+      const max = Math.max(...opts);
+      if (max && Number(sel.value) !== max) {
+        sel.value = String(max);
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        _bumpedLength = true;
+      }
+    } catch (_) {}
+  }
+
+  // Combine separate Date + Time columns into a single ISO timestamp when
+  // both exist. Some panels split them.
+  function rowTimestamp(cells, headers, ci) {
+    const datePart = ci.date >= 0 ? cells[ci.date] : '';
+    let timePart = '';
+    const tIdx = headers.findIndex(h => /^(time|hour)$/i.test(h));
+    if (tIdx >= 0) timePart = cells[tIdx] || '';
+    const isoDate = cleanDate(datePart);
+    if (timePart && /\d{1,2}:\d{2}/.test(timePart)) {
+      const m = timePart.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM|am|pm)?/);
+      if (m) {
+        let h = parseInt(m[1], 10);
+        const mn = m[2], s = m[3] || '00';
+        if ((m[4] || '').toLowerCase() === 'pm' && h < 12) h += 12;
+        if ((m[4] || '').toLowerCase() === 'am' && h === 12) h = 0;
+        return `${isoDate}T${String(h).padStart(2,'0')}:${mn}:${s}+05:30`;
+      }
+    }
+    return `${isoDate}T12:00:00+05:30`;
+  }
+
+  // Build a normalized list of {headers, rows[]} tables — preferring the
+  // DataTables API (all-pages) if available, falling back to a DOM walk.
+  function gatherTables() {
+    const dt = readDataTablesAllRows();
+    if (dt.length) return dt;
+    // DOM walk fallback
+    const tables = [];
+    collectCandidates().forEach(el => {
+      const headers = headersFrom(el);
+      if (!headers.length) return;
+      const rs = rowsFrom(el).map(tr => cellsFrom(tr));
+      // Drop the header row if it slipped in (first row equals headers)
+      const dataRows = rs.filter(cells =>
+        !(cells.length === headers.length && cells.every((c, i) => c === headers[i])));
+      tables.push({ headers, rows: dataRows, _el: el });
+    });
+    return tables;
+  }
+
   function scrapeAll() {
+    bumpDataTablesLength(); // try to expand the visible page (best-effort)
     const site = getSite();
-    const master = detectMaster();
+    const tables = gatherTables();
+    const master = detectMaster(tables);
     const out = {
       site, master, deposits: [], withdrawals: [],
       url: location.href, ts: new Date().toISOString(),
@@ -193,8 +318,8 @@
       tablesScanned: 0,
     };
 
-    collectCandidates().forEach(table => {
-      const headers = headersFrom(table);
+    tables.forEach(table => {
+      const headers = table.headers;
       if (!headers.length) return;
 
       const ci = classifyTable(headers.map(h => h.toLowerCase()));
@@ -206,15 +331,14 @@
       if (!looksTxn) return;
       out.tablesScanned++;
 
-      rowsFrom(table).forEach(tr => {
-        const cells = cellsFrom(tr);
-        if (cells.length < 2) return;
+      table.rows.forEach((cells) => {
+        if (!cells || cells.length < 2) return;
         out.totalRowsSeen++;
 
         const rowMeta = {
           _rowText: cells.join(' | '),
           _statusText: ci.status >= 0 ? cells[ci.status] : '',
-          _colour: rowColour(tr),
+          _colour: '', // colour heuristic only available in DOM mode; status text is enough for Freeplay
         };
         const status = classifyStatus(rowMeta);
         if (status === 'rejected') { out.skippedRejected++; return; }
@@ -229,8 +353,10 @@
             if (m && /\d/.test(m[1])) { utrVal = m[1]; break; }
           }
         }
+        const ts = rowTimestamp(cells, headers, ci);
         const entry = {
           date: cleanDate(ci.date >= 0 ? cells[ci.date] : cells[0]),
+          ts,
           name: ci.name >= 0 ? cells[ci.name] : '',
           utr:  utrVal,
           bank: ci.bank >= 0 ? cells[ci.bank] : '',
