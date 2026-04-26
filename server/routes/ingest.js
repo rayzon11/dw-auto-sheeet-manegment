@@ -98,9 +98,41 @@ router.post('/commit/gpay-statement', A.requireAuth, (req, res) => {
 });
 
 // ── PANEL (Chrome extension) ─────────────────────────────────
+//
+// Routing: each scrape carries `site` (freeplay24, testawl-admin, …) and
+// optionally `master` (the sidebar account code, e.g. "MAHA0001"). We use
+// settings.panel_map (JSON object) to translate `site:master` → the sheet's
+// panel slug. Examples of valid map values:
+//   { "freeplay24:MAHA0001": "1XBET0001" }
+//   { "freeplay24:*":        "1XBET0001" }   ← wildcard master
+//   { "freeplay24":          "1XBET0001" }   ← site-only fallback
+// If nothing matches, the entry is stored with the raw `site:master` slug
+// and the response includes `unmapped: true` so the UI can prompt for a map.
+function resolvePanelSlug(site, master) {
+  let map = {};
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key='panel_map'").get();
+    if (row && row.value) map = JSON.parse(row.value) || {};
+  } catch (_) {}
+  const tryKeys = [
+    master ? `${site}:${master}`.toLowerCase() : null,
+    `${site}:*`.toLowerCase(),
+    site.toLowerCase(),
+  ].filter(Boolean);
+  // case-insensitive lookup
+  const lcMap = {};
+  for (const k of Object.keys(map)) lcMap[k.toLowerCase()] = map[k];
+  for (const k of tryKeys) if (lcMap[k]) return { slug: lcMap[k], mapped: true };
+  // fallback: store raw so admin can later find + map it
+  return { slug: master ? `${site}:${master}` : site, mapped: false };
+}
+
 router.post('/panel', A.requireAuthOrToken, (req, res) => {
-  const { site, deposits, withdrawals } = req.body || {};
+  const { site, master, deposits, withdrawals } = req.body || {};
   if (!site) return res.status(400).json({ ok: false, error: 'site required' });
+
+  const { slug, mapped } = resolvePanelSlug(site, master);
+
   const ins = db.prepare(`INSERT OR IGNORE INTO dw(business_date, ts, panel_slug, type, amt, name, utr, remark, source, ext_ref, created_by)
                           VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
   let inserted = 0, skipped = 0;
@@ -109,8 +141,10 @@ router.post('/panel', A.requireAuthOrToken, (req, res) => {
       const ts = e.ts || e.date || null;
       const bd = ts ? businessDate(ts + 'T12:00:00+05:30') : currentBusinessDate();
       const utr = e.utr || '';
-      const extRef = utr ? `${site}:${utr}` : `${site}:${ts || ''}|${e.amount}|${(e.name || '').trim()}`;
-      const info = ins.run(bd, ts, site, type, Number(e.amount) || 0, e.name || '', utr,
+      // Dedupe key: prefer UTR (panel-side unique). Fall back to a composite
+      // (date|amount|name) keyed per slug so the same row doesn't ingest twice.
+      const extRef = utr ? `${slug}:${utr}` : `${slug}:${ts || ''}|${e.amount}|${(e.name || '').trim()}`;
+      const info = ins.run(bd, ts, slug, type, Number(e.amount) || 0, e.name || '', utr,
                            e.bank || '', 'extension', extRef, req.user.id);
       if (info.changes) inserted++; else skipped++;
     }
@@ -118,11 +152,41 @@ router.post('/panel', A.requireAuthOrToken, (req, res) => {
   tx(deposits || [], 'Deposit');
   tx(withdrawals || [], 'Withdrawal');
 
+  // Track per-source last sync (raw key, not the mapped slug — surfaces
+  // unmapped sources so the admin knows what to add to panel_map).
+  const sourceKey = master ? `${site}:${master}` : site;
   db.prepare(`INSERT INTO settings(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
-    .run(`panel_last_sync:${site}`, new Date().toISOString());
+    .run(`panel_last_sync:${sourceKey}`, new Date().toISOString());
 
-  audit(req.user.id, 'ingest', 'panel:' + site, null, { inserted, skipped });
-  res.json({ ok: true, inserted, skipped });
+  audit(req.user.id, 'ingest', 'panel:' + sourceKey, null, { inserted, skipped, slug, mapped });
+  res.json({ ok: true, inserted, skipped, panel_slug: slug, mapped, source: sourceKey });
+});
+
+// Read/write the panel_map settings entry. Used by the Settings UI.
+router.get('/panel/map', A.requireAuth, (req, res) => {
+  const row = db.prepare("SELECT value FROM settings WHERE key='panel_map'").get();
+  let map = {};
+  try { map = row && row.value ? JSON.parse(row.value) : {}; } catch (_) {}
+  // Also include known sheet panel slugs and recently-seen sources so the UI
+  // can render a nice mapper (no free-text typos).
+  const M = require('../lib/sheetMap');
+  const sheetSlugs = M.PANELS.map(p => p.slug);
+  const seen = db.prepare(`SELECT key, value FROM settings WHERE key LIKE 'panel_last_sync:%'`).all()
+    .map(r => ({ source: r.key.replace('panel_last_sync:', ''), last_sync: r.value }));
+  res.json({ ok: true, map, sheet_slugs: sheetSlugs, recent_sources: seen });
+});
+
+router.post('/panel/map', A.requireAuth, (req, res) => {
+  const map = (req.body && req.body.map) || {};
+  if (typeof map !== 'object' || Array.isArray(map))
+    return res.status(400).json({ ok: false, error: 'map must be an object' });
+  // Light validation: values must be strings (sheet slugs)
+  for (const k of Object.keys(map)) if (typeof map[k] !== 'string')
+    return res.status(400).json({ ok: false, error: `value for ${k} must be a string` });
+  db.prepare(`INSERT INTO settings(key, value) VALUES ('panel_map', ?)
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(map));
+  audit(req.user.id, 'update', 'panel_map', null, map);
+  res.json({ ok: true, map });
 });
 
 router.get('/panel/status', A.requireAuth, (req, res) => {

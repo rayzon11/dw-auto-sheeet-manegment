@@ -162,10 +162,32 @@
     return first ? [...first.children].map(c => (c.textContent||'').trim()) : [];
   }
 
+  // Detect the master/account label from the sidebar so the server knows
+  // which sheet panel this scrape belongs to (e.g. freeplay24 + MAHA0001).
+  function detectMaster() {
+    // Common patterns: a sidebar text node above the menu showing the user's
+    // master code, or the current login displayed at top-right.
+    const candidates = [];
+    document.querySelectorAll('aside, .sidebar, .side-bar, .navbar, .topbar, .user-info, h1, h2, h3, h4').forEach(el => {
+      const txt = (el.textContent || '').trim();
+      if (txt && txt.length < 60) candidates.push(txt);
+    });
+    // Look for an upper-case + digits pattern like MAHA0001, or any X+digits
+    for (const t of candidates) {
+      const m = t.match(/\b([A-Z]{2,}\d{2,6})\b/);
+      if (m) return m[1].toUpperCase();
+    }
+    // Fallback: try to read the body text once for the same pattern
+    const all = (document.body && document.body.innerText) ? document.body.innerText.slice(0, 4000) : '';
+    const m = all.match(/\b([A-Z]{2,}\d{2,6})\b/);
+    return m ? m[1].toUpperCase() : '';
+  }
+
   function scrapeAll() {
     const site = getSite();
+    const master = detectMaster();
     const out = {
-      site, deposits: [], withdrawals: [],
+      site, master, deposits: [], withdrawals: [],
       url: location.href, ts: new Date().toISOString(),
       skippedRejected: 0, skippedUnknown: 0, totalRowsSeen: 0,
       tablesScanned: 0,
@@ -283,9 +305,11 @@
         }
         if (!res) { if (!silent) badge('B2C: no response from background', 'warn'); return; }
         if (res.ok) {
-          const text = `✓ ${data.site}: +${res.inserted || 0} new · skipped ${res.skipped || 0}` +
+          const target = res.panel_slug ? ` → ${res.panel_slug}` : '';
+          const unmapped = res.mapped === false ? ' ⚠ unmapped' : '';
+          const text = `✓ ${data.site}${data.master ? '/' + data.master : ''}${target}${unmapped}: +${res.inserted || 0} new · skipped ${res.skipped || 0}` +
                        (data.skippedRejected ? ` · ${data.skippedRejected} rejected` : '');
-          badge(text, 'ok');
+          badge(text, res.mapped === false ? 'warn' : 'ok');
         } else badge('B2C: ' + (res.error || 'error'), 'err');
       });
     } catch (e) {
