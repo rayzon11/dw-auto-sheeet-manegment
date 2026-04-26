@@ -193,10 +193,19 @@
         if (status === 'rejected') { out.skippedRejected++; return; }
         if (status === 'unknown')  { out.skippedUnknown++;  return; }
 
+        // UTR fallback: scan every cell for a 10–22 digit/alnum string that
+        // looks like a UTR/ref id when the column-index detection missed it.
+        let utrVal = ci.utr >= 0 ? (cells[ci.utr] || '') : '';
+        if (!utrVal) {
+          for (const cell of cells) {
+            const m = String(cell || '').match(/\b([A-Z0-9]{10,22})\b/);
+            if (m && /\d/.test(m[1])) { utrVal = m[1]; break; }
+          }
+        }
         const entry = {
           date: cleanDate(ci.date >= 0 ? cells[ci.date] : cells[0]),
           name: ci.name >= 0 ? cells[ci.name] : '',
-          utr:  ci.utr  >= 0 ? cells[ci.utr]  : '',
+          utr:  utrVal,
           bank: ci.bank >= 0 ? cells[ci.bank] : '',
         };
         const dep = ci.deposit >= 0 ? parseAmt(cells[ci.deposit]) : 0;
@@ -306,9 +315,18 @@
   function startPolling() {
     if (polling) return;
     polling = true;
-    badge(`B2C: auto-sync ON · approved-only · every ${POLL_MS/1000}s`, 'ok');
-    runOnce({ silent: true });
-    setInterval(() => runOnce({ silent: true }), POLL_MS);
+    // Verify config before polling. If server URL or token are missing, surface
+    // a loud red badge so the user fixes it instead of seeing silent failures.
+    chrome.runtime.sendMessage({ type: 'GET_CFG' }, (r) => {
+      const cfg = (r && r.cfg) || {};
+      if (!cfg.serverUrl || !cfg.token) {
+        badge('B2C: Not configured. Click extension icon → Settings → set Server URL + Token.', 'err');
+        return;
+      }
+      badge(`B2C: auto-sync ON · approved-only · every ${POLL_MS/1000}s`, 'ok');
+      runOnce({ silent: true });
+      setInterval(() => runOnce({ silent: true }), POLL_MS);
+    });
   }
 
   // ─── Diagnose: dump table shapes to console (popup can show this) ────

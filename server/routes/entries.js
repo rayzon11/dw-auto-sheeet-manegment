@@ -238,4 +238,81 @@ router.get('/hisab', (req, res) => {
   });
 });
 
+// ── RECONCILE: bank credit vs panel deposit ──────────────────
+// Per business rule: the panel is the source of truth for D/W. Bank
+// statements show all credits; only some of those credits map to a panel
+// deposit (same name + amount). Anything CREDITED but NOT matched to a
+// panel deposit is a "leftover" that belongs in the B2C BANK & EXP
+// DETAILS section as an extra payment (or in PARKING if explicitly tagged).
+//
+// GET /api/reconcile-dw?date=YYYY-MM-DD            → returns matches/leftovers
+// POST /api/reconcile-dw/apply  { date, mode: 'extra_payment'|'parking' }
+//   → writes leftover bank credits to expenses table with the chosen
+//     category. Idempotent — uses ext_ref so repeats don't double-write.
+function reconcileFor(date) {
+  const banks = db.prepare('SELECT * FROM banks').all();
+  const credits = db.prepare(
+    `SELECT * FROM bank_txns WHERE business_date = ? AND type = 'credit'
+       AND COALESCE(category,'bank') NOT IN ('charge','reconciled')`
+  ).all(date);
+  const debits = db.prepare(
+    `SELECT * FROM bank_txns WHERE business_date = ? AND type = 'debit'
+       AND COALESCE(category,'bank') NOT IN ('charge','reconciled')`
+  ).all(date);
+  const dwDeposits = db.prepare(
+    `SELECT * FROM dw WHERE business_date = ? AND type LIKE 'Deposit%'`
+  ).all(date);
+  const dwWithdrawals = db.prepare(
+    `SELECT * FROM dw WHERE business_date = ? AND type LIKE 'Withdraw%'`
+  ).all(date);
+
+  function normName(s) { return String(s || '').replace(/[^a-z0-9]/gi, '').toLowerCase(); }
+  function findMatch(bank, panel) {
+    return panel.find(p => !p._taken && Math.abs(Number(p.amt) - Number(bank.amt)) < 0.5
+      && (normName(p.name) === normName(bank.detail) || normName(p.utr) === normName(bank.ext_ref)));
+  }
+  for (const c of credits) {
+    const m = findMatch(c, dwDeposits); if (m) { m._taken = true; c._matched = m.id; }
+  }
+  for (const d of debits) {
+    const m = findMatch(d, dwWithdrawals); if (m) { m._taken = true; d._matched = m.id; }
+  }
+  const leftoverCredit = credits.filter(c => !c._matched);
+  const leftoverDebit  = debits.filter(d => !d._matched);
+  return { banks, credits, debits, dwDeposits, dwWithdrawals, leftoverCredit, leftoverDebit };
+}
+
+router.get('/reconcile-dw', (req, res) => {
+  const date = req.query.business_date || currentBusinessDate();
+  const r = reconcileFor(date);
+  res.json({ ok: true, business_date: date,
+    matched: { credit: r.credits.filter(c => c._matched).length, debit: r.debits.filter(d => d._matched).length },
+    leftover: { credit: r.leftoverCredit, debit: r.leftoverDebit } });
+});
+
+router.post('/reconcile-dw/apply', (req, res) => {
+  const b = req.body || {};
+  const date = b.date || currentBusinessDate();
+  const mode = (b.mode === 'parking') ? 'parking_in' : 'extra_payment';
+  const r = reconcileFor(date);
+  let written = 0;
+  const ins = db.prepare(
+    'INSERT INTO expenses(business_date, detail, amt, category, remark, created_by) VALUES (?,?,?,?,?,?)'
+  );
+  const markBank = db.prepare(
+    "UPDATE bank_txns SET category = 'reconciled' WHERE id = ?"
+  );
+  const tx = db.transaction(() => {
+    for (const c of r.leftoverCredit) {
+      ins.run(date, c.detail || `bank credit ${c.id}`, Number(c.amt) || 0,
+              mode, `From bank #${c.bank_id} txn id=${c.id}`, req.user.id);
+      markBank.run(c.id);
+      written++;
+    }
+  });
+  tx();
+  audit(req.user.id, 'reconcile', 'bank_txns', null, { date, mode, written });
+  res.json({ ok: true, written, mode });
+});
+
 module.exports = router;

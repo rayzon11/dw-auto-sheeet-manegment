@@ -85,16 +85,60 @@ router.get('/preview', A.requireAuth, (req, res) => {
 });
 
 router.post('/google', A.requireAuth, async (req, res) => {
-  if (!process.env.GOOGLE_SHEET_ID || !process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    return res.status(400).json({ ok: false, error:
-      'set GOOGLE_SHEET_ID + GOOGLE_SERVICE_ACCOUNT_JSON env vars, and share the sheet with the service account email' });
-  }
+  // Read config from env OR settings table — see googleSheetWriter.loadGoogleConfig
   try {
     const { pushToGoogleSheet } = require('../lib/googleSheetWriter');
     const date = req.body?.date || req.query.date || currentBusinessDate();
     const result = await pushToGoogleSheet(db, date);
     audit(req.user.id, 'export', 'google_sheet', null, result);
     res.json({ ok: true, date, ...result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+// ── Google Sheets connection settings (UI-managed) ──────────────
+// GET  /api/sheet/google/config              → { sheet_id, tab, sa_set }
+// POST /api/sheet/google/config { sheet_id, tab, sa_json }
+//   sa_json may be a path to a key.json OR the full JSON string.
+router.get('/google/config', A.requireAuth, (req, res) => {
+  const get = (k) => {
+    if (process.env[k]) return process.env[k];
+    const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(k);
+    return r ? r.value : '';
+  };
+  res.json({
+    ok: true,
+    sheet_id: get('GOOGLE_SHEET_ID') || '',
+    tab: get('GOOGLE_SHEET_TAB') || 'DEMO',
+    sa_set: !!get('GOOGLE_SERVICE_ACCOUNT_JSON'),
+    via_env: !!(process.env.GOOGLE_SHEET_ID && process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+  });
+});
+router.post('/google/config', A.requireAuth, A.requireAdmin, (req, res) => {
+  const { sheet_id, tab, sa_json } = req.body || {};
+  const upsert = db.prepare(`INSERT INTO settings(key, value) VALUES (?,?)
+                              ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
+  if (sheet_id !== undefined) upsert.run('GOOGLE_SHEET_ID', String(sheet_id || ''));
+  if (tab !== undefined)      upsert.run('GOOGLE_SHEET_TAB', String(tab || 'DEMO'));
+  if (sa_json !== undefined && sa_json) {
+    // Validate JSON if it looks like JSON
+    if (sa_json.trim().startsWith('{')) {
+      try { JSON.parse(sa_json); }
+      catch (e) { return res.status(400).json({ ok: false, error: 'sa_json is not valid JSON' }); }
+    }
+    upsert.run('GOOGLE_SERVICE_ACCOUNT_JSON', String(sa_json));
+  }
+  audit(req.user.id, 'config', 'google_sheet', null, { sheet_id, tab, sa: sa_json ? '***' : null });
+  res.json({ ok: true });
+});
+
+router.post('/google/test', A.requireAuth, async (req, res) => {
+  try {
+    const { pushToGoogleSheet } = require('../lib/googleSheetWriter');
+    const date = currentBusinessDate();
+    const result = await pushToGoogleSheet(db, date);
+    res.json({ ok: true, ...result });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
@@ -216,25 +260,50 @@ router.get('/grid', A.requireAuth, (req, res) => {
 });
 
 router.get('/google/status', A.requireAuth, (req, res) => {
+  const get = (k) => {
+    if (process.env[k]) return process.env[k];
+    const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(k);
+    return r ? r.value : null;
+  };
+  const sheetId = get('GOOGLE_SHEET_ID');
+  const saSet   = !!get('GOOGLE_SERVICE_ACCOUNT_JSON');
   res.json({
     ok: true,
-    configured: !!(process.env.GOOGLE_SHEET_ID && process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
-    sheet_id: process.env.GOOGLE_SHEET_ID || null,
-    tab: process.env.GOOGLE_SHEET_TAB || 'DEMO',
-    url: process.env.GOOGLE_SHEET_ID
-      ? `https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_SHEET_ID}` : null,
+    configured: !!(sheetId && saSet),
+    sheet_id: sheetId,
+    tab: get('GOOGLE_SHEET_TAB') || 'DEMO',
+    url: sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}` : null,
   });
 });
 
 // Render the master template as a styled HTML table for the Live Sheet.
 // 1:1 visual of the .xlsx (colors, merges, fonts) + computed live data
 // + manual overrides. Returns { html } the frontend drops into #liveGrid.
+// In-memory render cache. Key = `${date}|${editable}|${ovStamp}|${tplMtime}`.
+// Rendering the full 50-bank, 438-col template is ~7s; cached responses are
+// instant. Cache invalidates whenever (a) template file changes, (b) any
+// override row for that date is written.
+const _htmlCache = new Map();
+function cacheKey(tpl, date, editable, ovStamp) {
+  const m = (() => { try { return fs.statSync(tpl).mtimeMs | 0; } catch (_) { return 0; } })();
+  return `${date}|${editable ? 1 : 0}|${ovStamp}|${m}`;
+}
+
 router.get('/html', A.requireAuth, (req, res) => {
   const date = req.query.date || currentBusinessDate();
   const editable = req.query.editable !== '0';
   const tpl = getTemplatePath();
   if (!tpl || !fs.existsSync(tpl)) return res.status(400).json({ ok: false, error: 'no template uploaded' });
   try {
+    // Cheap stamp for overrides: count + max(updated_at). Used to skip render.
+    const ovStamp = (() => {
+      const r = db.prepare("SELECT COUNT(*) c, COALESCE(MAX(updated_at),'') u FROM sheet_overrides WHERE business_date = ?").get(date);
+      return `${r.c}@${r.u}`;
+    })();
+    const ck = cacheKey(tpl, date, editable, ovStamp);
+    const hit = _htmlCache.get(ck);
+    if (hit) return res.json({ ok: true, business_date: date, html: hit, cached: true });
+
     const data = buildDataForDate(db, date);
     const g = buildGrid(data);
     // Pack live values into a {"r,c": value} map for the renderer.
@@ -256,7 +325,12 @@ router.get('/html', A.requireAuth, (req, res) => {
     const overrides = {};
     for (const o of ovs) overrides[`${o.row},${o.col}`] = o.value;
     const html = renderTemplateAsHtml(tpl, { liveValues, overrides, editable });
-    res.json({ ok: true, business_date: date, html, generated_at: new Date().toISOString() });
+    _htmlCache.set(ck, html);
+    if (_htmlCache.size > 30) {
+      const firstKey = _htmlCache.keys().next().value;
+      _htmlCache.delete(firstKey);
+    }
+    res.json({ ok: true, business_date: date, html, cached: false, generated_at: new Date().toISOString() });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
@@ -278,8 +352,40 @@ router.post('/cell', A.requireAuth, (req, res) => {
                   value=excluded.value, updated_by=excluded.updated_by, updated_at=excluded.updated_at`)
       .run(date, row, col, String(value), req.user.id);
   }
+
+  // Auto-import bank: if the cell sits under a column header that says
+  // "BANK NAME" (any row above it that came from the template), then
+  // ensure a banks-table row exists for that name.
+  let bankAutoImport = null;
+  try {
+    if (value && typeof value === 'string' && value.trim().length > 1 && value.length < 80) {
+      const tpl = getTemplatePath();
+      if (tpl) {
+        const styles = loadTemplateStyles(tpl);
+        const tv = styles.tplValues || [];
+        let columnIsBankName = false;
+        for (let rr = 0; rr <= row && rr < tv.length; rr++) {
+          const cellVal = tv[rr] && tv[rr][col];
+          if (cellVal && /BANK\s*NAME/i.test(String(cellVal))) { columnIsBankName = true; break; }
+        }
+        if (columnIsBankName) {
+          const name = value.trim();
+          const existing = db.prepare('SELECT id FROM banks WHERE LOWER(name)=LOWER(?)').get(name);
+          if (!existing) {
+            const info = db.prepare('INSERT INTO banks(name, holder, acno, open_balance) VALUES (?,?,?,0)')
+              .run(name, '', '');
+            bankAutoImport = { id: info.lastInsertRowid, name };
+            audit(req.user.id, 'auto_import', 'bank', info.lastInsertRowid, { from: 'sheet', date, row, col });
+          } else {
+            bankAutoImport = { id: existing.id, name, existing: true };
+          }
+        }
+      }
+    }
+  } catch (_) { /* don't block cell-write on auto-import errors */ }
+
   audit(req.user.id, 'cell_write', 'sheet', null, { date, row, col, value });
-  res.json({ ok: true });
+  res.json({ ok: true, bankAutoImport });
 });
 
 module.exports = router;

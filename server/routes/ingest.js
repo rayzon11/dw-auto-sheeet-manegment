@@ -44,22 +44,19 @@ router.post('/commit/bank-statement', A.requireAuth, async (req, res) => {
                               VALUES (?,?,?,?,?,?,?,?,?,?)`);
   const insDw = db.prepare(`INSERT OR IGNORE INTO dw(business_date, ts, type, amt, name, utr, remark, source, ext_ref, created_by)
                             VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  // Per business rule, bank-statement rows NEVER create DW deposit /
+  // withdrawal entries — only bank_txns. The Chrome extension (panel
+  // scrape) is the single source of truth for D/W. Reconciliation
+  // happens on the sheet, not at ingest time.
   const tx = db.transaction((items) => {
     for (const r of items) {
       if (r.skip) { skipped++; continue; }
       const bd = r.business_date || businessDate(r.date + 'T12:00:00+05:30') || currentBusinessDate();
-      if (r.entryKind === 'dw_deposit' || r.entryKind === 'dw_withdrawal') {
-        const type = r.entryKind === 'dw_deposit' ? 'Deposit' : 'Withdrawal';
-        const info = insDw.run(bd, r.date || null, type, Number(r.amt) || 0, r.name || '', r.utr || '',
-                               r.narration || '', 'statement', r.ext_ref || null, req.user.id);
-        if (info.changes) insertedDw++; else skipped++;
-      } else {
-        const type = (r.entryKind === 'bank_charge') ? 'debit' : r.type;
-        const category = r.entryKind === 'bank_charge' ? 'charge' : 'bank';
-        const info = insBank.run(bd, r.date || null, Number(bank_id), type, Number(r.amt) || 0, r.narration || '',
-                                 category, 'statement', r.ext_ref || null, req.user.id);
-        if (info.changes) insertedBank++; else skipped++;
-      }
+      const type = (r.entryKind === 'bank_charge') ? 'debit' : r.type;
+      const category = r.entryKind === 'bank_charge' ? 'charge' : 'bank';
+      const info = insBank.run(bd, r.date || null, Number(bank_id), type, Number(r.amt) || 0, r.narration || '',
+                               category, 'statement', r.ext_ref || null, req.user.id);
+      if (info.changes) insertedBank++; else skipped++;
     }
   });
   tx(rows);
@@ -174,15 +171,12 @@ router.post('/sms', A.requireAuthOrToken, (req, res) => {
       const bank_id = bankIdFor(p.bank);
       if (!bank_id && p.bank) { unknownBank++; unmapped.push(p.bank); }
 
-      // If it's a UPI/IMPS transfer with a counterparty name, also mirror it as a D/W row
-      // so panel-deposit customers who pay via UPI show up name-wise on the sheet.
-      if ((p.mode === 'UPI' || p.mode === 'IMPS') && p.counterparty && p.category !== 'charge') {
-        const type = p.type === 'credit' ? 'Deposit' : 'Withdrawal';
-        const dwInfo = insDw.run(bd, p.ts || null, type, p.amt, p.counterparty, p.utr || '',
-                                 p.raw.body.slice(0, 200), 'sms', 'sms-dw:' + p.ext_ref, req.user.id);
-        if (dwInfo.changes) insertedDw++;
-      }
-
+      // NO MIRROR TO DW. Per business rule, the gaming panel (Freeplay /
+      // Testawl247 via the Chrome extension) is the SOLE source of truth
+      // for Deposit / Withdrawal rows. Bank credits/debits stay strictly
+      // in bank_txns — the reconciliation step (panel deposit vs bank
+      // credit) decides where the "leftover" credited amount lands
+      // (B2C BANK & EXP DETAILS / parking / etc).
       const info = insBank.run(bd, p.ts || null, bank_id || null, p.type, p.amt,
                                (p.counterparty || p.raw.body.slice(0, 180)),
                                p.category || 'bank', 'sms', p.ext_ref,

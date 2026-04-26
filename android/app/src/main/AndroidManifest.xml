@@ -15,6 +15,7 @@
         android:label="B2C Hisab"
         android:allowBackup="false"
         android:icon="@android:drawable/ic_dialog_info"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light">
 
         <activity android:name=".MainActivity" android:exported="true">

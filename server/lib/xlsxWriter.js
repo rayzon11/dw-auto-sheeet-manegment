@@ -196,7 +196,9 @@ function loadTemplateStyles(templatePath) {
     // Determine the actual content extent — find last row/col that has any text/color
     let lastRow = 0, lastCol = 0;
     const HARD_MAX_ROW = Math.min(range.e.r, 120);  // sheet has 1000 rows of empty noise
-    const HARD_MAX_COL = Math.min(range.e.c, 50);   // and PV (440) cols, mostly empty
+    // Master template has 50 banks × 8 cols starting at col 38 → real content
+    // ends near col PV (438). Cap generously; per-row trim still drops empties.
+    const HARD_MAX_COL = Math.min(range.e.c, 460);
     for (let r = 0; r <= HARD_MAX_ROW; r++) {
       for (let c = 0; c <= HARD_MAX_COL; c++) {
         const cell = ws[XLSX.utils.encode_cell({ r, c })];
@@ -347,10 +349,36 @@ function renderTemplateAsHtml(templatePath, opts = {}) {
     else if (v != null) { cell.t = 's'; cell.v = String(v); }
   }
 
+  // ── Lightweight formula re-evaluation for SINGLE-CELL references ────
+  // The template uses formulas like `=AZ1` to mirror a bank-card label
+  // ("BANK NAME") into the left summary column. SheetJS keeps the cached
+  // result, so until we re-evaluate, typing a real bank name into AZ1
+  // wouldn't update C5 in the rendered HTML. Walk every cell with a
+  // formula matching the simple `=COL+ROW` pattern and copy the target's
+  // current value. Multi-cell formulas (SUM, arithmetic) are left to
+  // their cached values — those are recomputed on download via a real
+  // engine elsewhere.
+  for (const a of Object.keys(ws)) {
+    if (a.startsWith('!')) continue;
+    const cell = ws[a];
+    if (!cell || !cell.f) continue;
+    const m = String(cell.f).match(/^([A-Z]+\d+)$/);
+    if (!m) continue;
+    const tgt = ws[m[1]];
+    if (!tgt) continue;
+    if (tgt.v != null && tgt.v !== '') {
+      cell.v = tgt.v;
+      cell.t = tgt.t || (typeof tgt.v === 'number' ? 'n' : 's');
+    }
+  }
+
   // Trim to content extent so the HTML isn't 23 MB of empties
   let lastR = 0, lastC = 0;
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-  const HARD_R = Math.min(range.e.r, 250), HARD_C = Math.min(range.e.c, 80);
+  // Template defines 50 banks × ~8 cols each starting at col 38, plus the
+  // left summary + 6 panel columns. Real content extends to column ~PV (438).
+  // Cap generously so all 50 banks render; rendering trims later anyway.
+  const HARD_R = Math.min(range.e.r, 250), HARD_C = Math.min(range.e.c, 460);
   for (let r = 0; r <= HARD_R; r++) {
     for (let c = 0; c <= HARD_C; c++) {
       const cell = ws[XLSX.utils.encode_cell({ r, c })];

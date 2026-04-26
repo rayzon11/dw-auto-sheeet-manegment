@@ -392,13 +392,25 @@
     try {
       const r = await api(`/api/dw?business_date=${encodeURIComponent(d)}`);
       const all = r.rows || [];
-      const isFp = x => (x.panel_slug || '').toLowerCase().includes('freeplay');
+      // Match Freeplay rows broadly: (a) panel_slug contains 'freeplay',
+      // (b) source='extension' (any extension-fed row goes here unless we
+      // explicitly route it elsewhere), or (c) remark mentions freeplay.
+      const isFp = x => {
+        const s = (x.panel_slug || '').toLowerCase();
+        if (s.includes('freeplay')) return true;
+        if (x.source === 'extension') return true;
+        if (((x.remark || '') + (x.name || '')).toLowerCase().includes('freeplay')) return true;
+        return false;
+      };
       const deps = all.filter(x => isFp(x) && x.type === 'Deposit');
       const wdls = all.filter(x => isFp(x) && x.type === 'Withdrawal');
       const sum = arr => arr.reduce((a, b) => a + (Number(b.amt) || 0), 0);
       $('#fpDepTotal').textContent = `· ${deps.length} · ₹${sum(deps).toLocaleString('en-IN')}`;
       $('#fpWdlTotal').textContent = `· ${wdls.length} · ₹${sum(wdls).toLocaleString('en-IN')}`;
-      const render = arr => arr.length ? tableOf(arr, ['ts','name','amt','utr','source']) : '<div class="mute">No rows yet.</div>';
+      const cols = ['ts','name','amt','utr','source','remark'];
+      const render = arr => arr.length
+        ? tableOf(arr, cols)
+        : '<div class="mute">No approved rows yet — load the freeplay panel in Chrome with the extension installed, then click Sync now in the popup.</div>';
       $('#fpDepTable').innerHTML = render(deps);
       $('#fpWdlTable').innerHTML = render(wdls);
       // Role-based hide

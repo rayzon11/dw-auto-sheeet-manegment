@@ -15,17 +15,46 @@
 const { buildDataForDate } = require('./xlsxWriter');
 const M = require('./sheetMap');
 
+// Read settings either from env vars OR from the `settings` table so the
+// user can configure Google Sheets connection from the UI without restarting.
+function loadGoogleConfig() {
+  const { db } = require('./db');
+  const get = (k) => {
+    if (process.env[k]) return process.env[k];
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(k);
+    return row ? row.value : null;
+  };
+  return {
+    sheetId: get('GOOGLE_SHEET_ID'),
+    tab: get('GOOGLE_SHEET_TAB') || 'DEMO',
+    saJson: get('GOOGLE_SERVICE_ACCOUNT_JSON'), // path OR raw JSON string
+  };
+}
+
 let _sheets = null;
+let _sheetsKey = '';
 async function sheetsClient() {
-  if (_sheets) return _sheets;
+  const cfg = loadGoogleConfig();
+  if (!cfg.saJson) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON not set (env or settings table)');
+  // Cache invalidates if the credential changes
+  if (_sheets && _sheetsKey === cfg.saJson) return _sheets;
   const { google } = require('googleapis');
-  const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!keyFile) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON env not set');
+  const fs = require('fs');
+  let credentials = null;
+  let keyFile = null;
+  if (cfg.saJson.trim().startsWith('{')) {
+    credentials = JSON.parse(cfg.saJson);
+  } else if (fs.existsSync(cfg.saJson)) {
+    keyFile = cfg.saJson;
+  } else {
+    throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON: not a JSON string and not a file path');
+  }
   const auth = new google.auth.GoogleAuth({
-    keyFile,
+    ...(keyFile ? { keyFile } : { credentials }),
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
   _sheets = google.sheets({ version: 'v4', auth: await auth.getClient() });
+  _sheetsKey = cfg.saJson;
   return _sheets;
 }
 
@@ -100,9 +129,10 @@ function buildBatch(data, tab) {
 }
 
 async function pushToGoogleSheet(db, business_date) {
-  const sheetId = process.env.GOOGLE_SHEET_ID;
-  const tab = process.env.GOOGLE_SHEET_TAB || 'DEMO';
-  if (!sheetId) throw new Error('GOOGLE_SHEET_ID env not set');
+  const cfg = loadGoogleConfig();
+  const sheetId = cfg.sheetId;
+  const tab = cfg.tab;
+  if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set (env or settings table)');
   const svc = await sheetsClient();
   const data = buildDataForDate(db, business_date);
   const reqs = buildBatch(data, tab);

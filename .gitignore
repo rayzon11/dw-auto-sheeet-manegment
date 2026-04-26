@@ -5,6 +5,8 @@ data/hisab.db-wal
 data/exports/
 data/templates/
 data/extension.zip
+data/android-source.zip
+data/app-debug.apk
 *.log
 .env
 .env.*

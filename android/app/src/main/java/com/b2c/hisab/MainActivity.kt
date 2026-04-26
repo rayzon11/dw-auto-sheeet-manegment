@@ -30,14 +30,15 @@ class MainActivity : Activity() {
 
         val tvTitle = TextView(this).apply { text = "B2C Hisab — SMS Sync"; textSize = 20f }
         val urlEt = EditText(this).apply {
-            hint = "Server URL (e.g. http://192.168.1.10:3000)"
-            setText(prefs.getString("url", ""))
+            hint = "Server URL (e.g. http://192.168.1.23:3000)"
+            setText(prefs.getString("url", "http://192.168.1.23:3000"))
         }
         val tokEt = EditText(this).apply {
-            hint = "API token (from web app Admin tab)"
+            hint = "API token (web app → Settings → Tokens → New)"
             setText(prefs.getString("token", ""))
         }
         val saveBtn = Button(this).apply { text = "Save config" }
+        val testBtn = Button(this).apply { text = "Test connection" }
         val permBtn = Button(this).apply { text = "Grant SMS permissions" }
         val notifBtn = Button(this).apply { text = "Grant Notification access" }
         val backfillBtn = Button(this).apply { text = "Backfill: send last 500 SMS" }
@@ -63,8 +64,39 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }
         backfillBtn.setOnClickListener { doBackfill() }
+        testBtn.setOnClickListener {
+            statusView.text = "Status: testing connection…"
+            Thread {
+                val url = (prefs.getString("url", "") ?: "").trimEnd('/')
+                val token = prefs.getString("token", "") ?: ""
+                if (url.isBlank()) {
+                    runOnUiThread { statusView.text = "Set Server URL first, then Save config." }
+                    return@Thread
+                }
+                try {
+                    val conn = java.net.URL("$url/api/health").openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 8_000
+                    conn.readTimeout = 8_000
+                    val code = conn.responseCode
+                    val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                        ?.bufferedReader()?.use { it.readText() } ?: ""
+                    var msg = "Health: HTTP $code\n$body"
+                    if (token.isNotBlank() && code == 200) {
+                        // Also test bearer token works
+                        val c2 = java.net.URL("$url/api/ingest/panel/status").openConnection() as java.net.HttpURLConnection
+                        c2.setRequestProperty("Authorization", "Bearer $token")
+                        c2.connectTimeout = 8_000
+                        val code2 = c2.responseCode
+                        msg += "\n\nToken check: HTTP $code2 ${if (code2 == 200) "(OK)" else "(invalid token)"}"
+                    }
+                    runOnUiThread { statusView.text = msg }
+                } catch (e: Exception) {
+                    runOnUiThread { statusView.text = "FAIL: ${e.javaClass.simpleName}: ${e.message}\n\nIf 'CleartextNotPermitted', rebuild the APK with the new manifest.\nIf 'Connection refused' / timeout, check that the phone & PC are on the same Wi-Fi and Windows firewall allows port 3000." }
+                }
+            }.start()
+        }
 
-        listOf(tvTitle, urlEt, tokEt, saveBtn, permBtn, notifBtn, backfillBtn, statusView).forEach {
+        listOf(tvTitle, urlEt, tokEt, saveBtn, testBtn, permBtn, notifBtn, backfillBtn, statusView).forEach {
             root.addView(it, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 20 })

@@ -3,6 +3,17 @@ const $ = s => document.querySelector(s);
 
 let activeTabId = null;
 
+// Sanity check: are server URL and token configured? If not, prompt loud.
+chrome.runtime.sendMessage({ type: 'GET_CFG' }, (r) => {
+  if (!r || !r.ok) return;
+  const c = r.cfg || {};
+  if (!c.serverUrl || !c.token) {
+    const s = $('#status');
+    s.style.color = '#ff5569';
+    s.textContent = 'Not configured. Click Settings → set Server URL (e.g. http://localhost:3000) and paste an API token (Login → Settings → Tokens → New).';
+  }
+});
+
 chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
   if (!tab) return;
   activeTabId = tab.id;

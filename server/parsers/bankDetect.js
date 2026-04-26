@@ -40,13 +40,43 @@ const EXTRA = [
 
 // Detect bank code from a chunk of statement text.
 // Uses the full banks registry (every Indian bank) first, then the legacy tables.
+// Two-pass: (1) header/footer (first + last 3k) which usually has the bank's
+// legal name; (2) full transaction body — UPI/IMPS narrations typically embed
+// IFSC prefixes (HDFCN, ICIC, UTIB, KKBK, ...) which are rock-solid identifiers.
+// We tally hits from the body so a noisy header doesn't lose to one transaction
+// that happens to mention a different bank.
 function detectBankCode(text) {
   if (!text) return null;
-  const head = text.slice(0, 3000); // header/footer typically in first page
+  const head = text.slice(0, 3000) + ' ' + text.slice(-1500);
+  // Pass 1 — header
   for (const [code, re] of ALL_BANKS) if (re.test(head)) return code;
   for (const s of EXTRA) if (s.re.test(head)) return s.bank;
   for (const s of BANK_SIGNATURES) if (s.re.test(head)) return s.bank;
-  return null;
+
+  // Pass 2 — scan ALL text, count hits, pick the most-mentioned bank
+  const tally = new Map();
+  const bump = (code, n) => tally.set(code, (tally.get(code) || 0) + n);
+  for (const [code, re] of ALL_BANKS) {
+    const m = text.match(new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'));
+    if (m) bump(code, m.length);
+  }
+  for (const s of EXTRA) {
+    const m = text.match(new RegExp(s.re.source, s.re.flags.includes('g') ? s.re.flags : s.re.flags + 'g'));
+    if (m) bump(s.bank, m.length);
+  }
+  if (!tally.size) return null;
+  return [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
+}
+
+// Cross-check: the detected bank should have at least a few txns whose
+// narrations look like its IFSC prefix or name. Returns a small report.
+function transactionBankSignals(text) {
+  const counts = {};
+  for (const [code, re] of ALL_BANKS) {
+    const m = text.match(new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'));
+    if (m && m.length) counts[code] = m.length;
+  }
+  return counts;
 }
 
 // Pull an account number (last 4-16 digits) out of the text.
@@ -123,6 +153,7 @@ function detectFromText(text, opts = {}) {
   const code = detectBankCode(text);
   const acLast4 = extractAccountNo(text);
   const holder = extractHolder(text);
+  const signals = transactionBankSignals(text);
   let match = matchBankInDb(code, acLast4);
   let created = false;
   if (!match && opts.autoRegister && code) {
@@ -138,7 +169,8 @@ function detectFromText(text, opts = {}) {
     confidence: match ? match.confidence : (code ? 'low' : 'none'),
     via: match ? match.via : null,
     auto_registered: created,
+    signals, // { HDFC: 12, ICIC: 1, ... } — for sanity checks in UI
   };
 }
 
-module.exports = { detectFromText, detectBankCode, extractAccountNo, extractHolder, matchBankInDb, autoRegister };
+module.exports = { detectFromText, detectBankCode, extractAccountNo, extractHolder, matchBankInDb, autoRegister, transactionBankSignals };
