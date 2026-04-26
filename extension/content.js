@@ -40,10 +40,15 @@
 
   function classifyStatus(row) {
     // 1. Look at a dedicated status cell if headers identified one.
-    const statusText = (row._statusText || '').toString();
+    // Status column is authoritative — if it says rejected/pending/cancelled
+    // we never treat the row as approved even if other cells contain "approved" text.
+    const statusText = (row._statusText || '').toString().toLowerCase().trim();
     if (statusText) {
       if (REJECT_RE.test(statusText)) return 'rejected';
       if (APPROVED_RE.test(statusText)) return 'approved';
+      // Status column present but value is something else → "unknown",
+      // never fall back to row-text scan for these rows.
+      return 'unknown';
     }
     // 2. Fallback: any cell text.
     const all = (row._rowText || '').toString();
@@ -312,18 +317,49 @@
       console.error('[B2C]', e);
     }
   }
+  // Wait until at least one txn-looking table has data rows. DataTables-style
+  // panels (like Freeplay24) load via AJAX after the page renders, so an early
+  // scrape sees only "No Data Available In Table". Retry every 800ms up to 12s.
+  function waitForData(maxWaitMs = 12000, intervalMs = 800) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        const cands = collectCandidates();
+        for (const t of cands) {
+          const headers = headersFrom(t);
+          if (!headers.length) continue;
+          const ci = classifyTable(headers.map(h => h.toLowerCase()));
+          if (ci.amount < 0 && ci.deposit < 0 && ci.wd < 0) continue;
+          const rs = rowsFrom(t);
+          // skip header-only and "no data" placeholder rows
+          const dataRows = rs.filter(r => {
+            const txt = (r.textContent || '').toLowerCase();
+            return r !== rs[0] && !/no data|no record|no entries/i.test(txt) && txt.trim().length > 5;
+          });
+          if (dataRows.length) return resolve(true);
+        }
+        if (Date.now() - start >= maxWaitMs) return resolve(false);
+        setTimeout(tick, intervalMs);
+      };
+      tick();
+    });
+  }
+
   function startPolling() {
     if (polling) return;
     polling = true;
     // Verify config before polling. If server URL or token are missing, surface
     // a loud red badge so the user fixes it instead of seeing silent failures.
-    chrome.runtime.sendMessage({ type: 'GET_CFG' }, (r) => {
+    chrome.runtime.sendMessage({ type: 'GET_CFG' }, async (r) => {
       const cfg = (r && r.cfg) || {};
       if (!cfg.serverUrl || !cfg.token) {
         badge('B2C: Not configured. Click extension icon → Settings → set Server URL + Token.', 'err');
         return;
       }
-      badge(`B2C: auto-sync ON · approved-only · every ${POLL_MS/1000}s`, 'ok');
+      badge(`B2C: waiting for table data…`, 'warn');
+      const had = await waitForData();
+      if (!had) badge(`B2C: no data on this page (yet). Open Deposits/Withdrawals history.`, 'warn');
+      else badge(`B2C: auto-sync ON · approved-only · every ${POLL_MS/1000}s`, 'ok');
       runOnce({ silent: true });
       setInterval(() => runOnce({ silent: true }), POLL_MS);
     });
