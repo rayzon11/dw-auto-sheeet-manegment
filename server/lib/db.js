@@ -1,12 +1,12 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { DatabaseSync } = require('node:sqlite');
+const Database = require('better-sqlite3');
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'hisab.db');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
-const raw = new DatabaseSync(DB_PATH);
+const raw = new Database(DB_PATH);
 raw.exec('PRAGMA journal_mode = WAL;');
 raw.exec('PRAGMA foreign_keys = ON;');
 
